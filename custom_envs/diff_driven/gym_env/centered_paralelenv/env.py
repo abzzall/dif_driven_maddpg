@@ -19,12 +19,12 @@ class DiffDriveParallelEnv(ParallelEnv):
     def __init__(self):
         super().__init__()
         self._num_agents = num_agents
-        self.agents = [f"agent_{i}" for i in range(self.num_agents)]
+        self.agents = [f"agent_{i}" for i in range(self._num_agents)]
         self.possible_agents = self.agents[:]
 
         # World settings from config
         self.env_size = env_size
-        self.num_landmarks = num_agents
+        self.num_landmarks = self._num_agents
         self.num_obstacles = num_obstacles
         self.v_lin_max = v_lin_max
         self.v_ang_max = v_ang_max
@@ -281,7 +281,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         )
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         total_distance = cost_matrix[row_ind, col_ind].sum()
-        base_reward = -total_distance / self.num_agents
+        base_reward = -total_distance / self._num_agents
 
         # Local collision penalties
         penalties = {a: 0.0 for a in self.agents}
