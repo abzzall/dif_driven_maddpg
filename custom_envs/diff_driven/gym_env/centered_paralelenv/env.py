@@ -78,7 +78,45 @@ class DiffDriveParallelEnv(ParallelEnv):
         pass
 
     def state(self):
-        pass
+        # Geometric center of landmarks
+        lm_center = np.mean(self.landmarks, axis=0)
+
+        # Weighted circular mean angle for 0x axis
+        vectors = [lm - lm_center for lm in self.landmarks]
+        distances = np.linalg.norm(vectors, axis=1)
+        angles = np.arctan2([v[1] for v in vectors], [v[0] for v in vectors])
+        sin_sum = np.sum(np.sin(angles) * distances)
+        cos_sum = np.sum(np.cos(angles) * distances)
+        mean_angle = np.arctan2(sin_sum, cos_sum)
+        rot_matrix = np.array([
+            [np.cos(mean_angle), np.sin(mean_angle)],
+            [-np.sin(mean_angle), np.cos(mean_angle)]
+        ])
+
+        # Landmarks in rotated frame
+        rel_landmarks = [rot_matrix @ (lm - lm_center) for lm in self.landmarks]
+
+        # Obstacles: position and size
+        rel_obstacles = [
+            np.concatenate([rot_matrix @ (ob["pos"] - lm_center), [ob["radius"]]])
+            for ob in self.obstacles
+        ]
+
+        # Agents: position, linear speed, angle
+        rel_agents = [
+            np.concatenate([
+                rot_matrix @ (st["pos"] - lm_center),
+                [st["v_lin"], np.deg2rad(st["angle"])]
+            ])
+            for st in self.agent_states.values()
+        ]
+
+        full_state = np.concatenate([
+            np.array(rel_landmarks).flatten(),
+            np.array(rel_obstacles).flatten(),
+            np.array(rel_agents).flatten()
+        ])
+        return full_state.astype(np.float32)
 
     def _init_agents(self):
         self.agent_states = {}
