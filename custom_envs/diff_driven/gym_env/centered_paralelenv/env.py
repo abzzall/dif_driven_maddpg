@@ -18,7 +18,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def __init__(self):
         super().__init__()
-        self.num_agents = num_agents
+        self._num_agents = num_agents
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
         self.possible_agents = self.agents[:]
 
