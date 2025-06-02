@@ -45,3 +45,4 @@ max_steps = 500
 obstacle_size_min=0.3
 obstacle_size_max=3
 
+collision_penalty_scale=10

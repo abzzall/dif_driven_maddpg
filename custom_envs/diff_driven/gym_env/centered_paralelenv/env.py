@@ -1,12 +1,14 @@
 from pettingzoo import ParallelEnv
 from gymnasium import spaces
 import numpy as np
+from scipy.optimize import linear_sum_assignment
+
 from config import (
     env_name, num_agents, obs_dim, action_dim, obs_low, obs_high,
     act_low, act_high, render_mode,
     env_size, num_obstacles, v_lin_max, v_ang_max, dv_lin_max,
     dv_ang_max, agent_radius, safe_dist, sens_range, max_steps,
-    obstacle_size_min, obstacle_size_max
+    obstacle_size_min, obstacle_size_max, collision_penalty_scale
 )
 
 
@@ -203,4 +205,34 @@ class DiffDriveParallelEnv(ParallelEnv):
             observations[agent_id] = flat_obs.astype(np.float32)
         return observations
     def _compute_rewards(self):
-        pass  # Use Hungarian algorithm and local collision penalties
+        # Distance cost matrix (agents x landmarks)
+        agent_positions = [self.agent_states[a]["pos"] for a in self.agents]
+        cost_matrix = np.linalg.norm(
+            np.expand_dims(agent_positions, 1) - np.expand_dims(self.landmarks, 0), axis=2
+        )
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        total_distance = cost_matrix[row_ind, col_ind].sum()
+        base_reward = -total_distance / self.num_agents
+
+        # Local collision penalties
+        penalties = {a: 0.0 for a in self.agents}
+        for i, aid in enumerate(self.agents):
+            ai = self.agent_states[aid]
+            for j, bid in enumerate(self.agents):
+                if i >= j:
+                    continue
+                aj = self.agent_states[bid]
+                d = np.linalg.norm(ai["pos"] - aj["pos"])
+                if d < self.safe_dist:
+                    p = 10 * np.exp(-d)
+                    penalties[aid] -= p
+                    penalties[bid] -= p
+            for ob in self.obstacles:
+                d = np.linalg.norm(ai["pos"] - ob["pos"]) - ob["radius"]
+                if d < self.safe_dist:
+                    penalties[aid] -= collision_penalty_scale * np.exp(-d)
+
+
+        # Total reward
+        rewards = {a: base_reward + penalties[a] for a in self.agents}
+        return rewards
