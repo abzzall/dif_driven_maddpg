@@ -72,7 +72,6 @@ class DiffDriveParallelEnv(ParallelEnv):
         truncations = {agent: False for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
         return observations, rewards, terminations, truncations, infos
-
     def render(self):
         pass
 
@@ -158,13 +157,53 @@ class DiffDriveParallelEnv(ParallelEnv):
             self.obstacles.append({"pos": pos, "radius": radius})
 
     def _apply_actions(self, actions):
-        pass  # Update linear/angular velocity based on dV inputs and clamp
+        for agent, action in actions.items():
+            state = self.agent_states[agent]
+            dv_lin = np.clip(action[0], -self.dv_lin_max, self.dv_lin_max)
+            dv_ang = np.clip(action[1], -self.dv_ang_max, self.dv_ang_max)
+
+            state["v_lin"] = np.clip(state["v_lin"] + dv_lin, 0, self.v_lin_max)
+            state["v_ang"] = np.clip(state["v_ang"] + dv_ang, -self.v_ang_max, self.v_ang_max)
 
     def _update_positions(self):
-        pass  # Move agents based on current velocities and orientations
+        for agent in self.agents:
+            state = self.agent_states[agent]
+            theta_rad = np.deg2rad(state["angle"])
+            dx = state["v_lin"] * np.cos(theta_rad)
+            dy = state["v_lin"] * np.sin(theta_rad)
+
+            new_pos = state["pos"] + np.array([dx, dy])
+            new_pos = np.clip(new_pos, self.agent_radius, self.env_size - self.agent_radius)
+            state["pos"] = new_pos
+            state["angle"] = (state["angle"] + state["v_ang"]) % 360
 
     def _handle_collisions(self):
-        pass  # Implement agent-agent and agent-obstacle boundary collisions
+        for i, agent_i in enumerate(self.agents):
+            ai = self.agent_states[agent_i]
+            for j, agent_j in enumerate(self.agents):
+                if i >= j:
+                    continue
+                aj = self.agent_states[agent_j]
+                vec = aj["pos"] - ai["pos"]
+                dist = np.linalg.norm(vec)
+                if dist < 2 * self.agent_radius:
+                    overlap = 2 * self.agent_radius - dist
+                    if dist > 0:
+                        direction = vec / dist
+                        ai["pos"] -= direction * (overlap / 2)
+                        aj["pos"] += direction * (overlap / 2)
+                    ai["v_lin"] = 0
+                    aj["v_lin"] = 0
+
+            for ob in self.obstacles:
+                vec = ob["pos"] - ai["pos"]
+                dist = np.linalg.norm(vec)
+                if dist < self.agent_radius + ob["radius"]:
+                    overlap = self.agent_radius + ob["radius"] - dist
+                    if dist > 0:
+                        direction = -vec / dist
+                        ai["pos"] += direction * overlap
+                    ai["v_lin"] = 0
 
     def _get_all_observations(self):
         observations = {}
