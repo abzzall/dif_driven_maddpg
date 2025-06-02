@@ -2,6 +2,7 @@ from pettingzoo import ParallelEnv
 from gymnasium import spaces
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+import matplotlib.pyplot as plt
 
 from config import (
     env_name, num_agents, obs_dim, action_dim, obs_low, obs_high,
@@ -73,11 +74,40 @@ class DiffDriveParallelEnv(ParallelEnv):
         infos = {agent: {} for agent in self.agents}
         return observations, rewards, terminations, truncations, infos
     def render(self):
-        pass
+        if self.fig is None or self.ax is None:
+            self.fig, self.ax = plt.subplots(figsize=(6, 6))
+        self.ax.clear()
+        self.ax.set_xlim(0, self.env_size)
+        self.ax.set_ylim(0, self.env_size)
+        self.ax.set_aspect('equal')
+        self.ax.set_title(f"Step {self.timestep}")
+
+        # Draw obstacles
+        for ob in self.obstacles:
+            circle = plt.Circle(ob["pos"], ob["radius"], color='gray', alpha=0.5)
+            self.ax.add_patch(circle)
+
+        # Draw landmarks
+        for lm in self.landmarks:
+            self.ax.plot(lm[0], lm[1], 'rx', markersize=8)
+
+        # Draw agents
+        for aid, state in self.agent_states.items():
+            pos = state["pos"]
+            angle = np.deg2rad(state["angle"])
+            circle = plt.Circle(pos, self.agent_radius, color='blue', alpha=0.6)
+            self.ax.add_patch(circle)
+            dx = self.agent_radius * np.cos(angle)
+            dy = self.agent_radius * np.sin(angle)
+            self.ax.arrow(pos[0], pos[1], dx, dy, head_width=0.2, head_length=0.2, fc='blue', ec='blue')
+
+        plt.pause(0.001)
 
     def close(self):
-        pass
-
+        if self.fig:
+            plt.close(self.fig)
+            self.fig = None
+            self.ax = None
     def state(self):
         # Geometric center of landmarks
         lm_center = np.mean(self.landmarks, axis=0)
