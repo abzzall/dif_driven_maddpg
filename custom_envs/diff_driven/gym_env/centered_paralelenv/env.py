@@ -127,7 +127,42 @@ class DiffDriveParallelEnv(ParallelEnv):
         pass  # Implement agent-agent and agent-obstacle boundary collisions
 
     def _get_all_observations(self):
-        pass  # Compute agent-local observations (agents, landmarks, obstacle distances)
+        observations = {}
+        for agent_id in self.agents:
+            agent = self.agent_states[agent_id]
+            pos = agent["pos"]
+            angle = np.deg2rad(agent["angle"])
 
+            rot_matrix = np.array([
+                [np.cos(angle), np.sin(angle)],
+                [-np.sin(angle), np.cos(angle)]
+            ])
+
+            # Other agents (excluding self)
+            rel_agents = [
+                rot_matrix @ (self.agent_states[other]["pos"] - pos)
+                for other in self.agents if other != agent_id
+            ]
+
+            # Landmarks
+            rel_landmarks = [
+                rot_matrix @ (lm - pos)
+                for lm in self.landmarks
+            ]
+
+            # Obstacle distances in sensing range
+            obs_dists = []
+            for obs in self.obstacles:
+                center_dist = np.linalg.norm(pos - obs["pos"])
+                edge_dist = center_dist - obs["radius"]
+                obs_dists.append(edge_dist if edge_dist < self.sens_range else 0.0)
+
+            flat_obs = np.concatenate([
+                np.array(rel_agents).flatten(),
+                np.array(rel_landmarks).flatten(),
+                np.array(obs_dists)
+            ])
+            observations[agent_id] = flat_obs.astype(np.float32)
+        return observations
     def _compute_rewards(self):
         pass  # Use Hungarian algorithm and local collision penalties
