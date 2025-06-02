@@ -40,3 +40,8 @@ sens_range = 5 * v_lin_max
 
 # Episode Settings
 max_steps = 500
+
+
+obstacle_size_min=0.3
+obstacle_size_max=3
+

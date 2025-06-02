@@ -5,7 +5,8 @@ from config import (
     env_name, num_agents, obs_dim, action_dim, obs_low, obs_high,
     act_low, act_high, render_mode,
     env_size, num_obstacles, v_lin_max, v_ang_max, dv_lin_max,
-    dv_ang_max, agent_radius, safe_dist, sens_range, max_steps
+    dv_ang_max, agent_radius, safe_dist, sens_range, max_steps,
+    obstacle_size_min, obstacle_size_max
 )
 
 
@@ -80,13 +81,41 @@ class DiffDriveParallelEnv(ParallelEnv):
         pass
 
     def _init_agents(self):
-        pass  # Set random initial position and orientation for each agent, zero velocity
+        self.agent_states = {}
+        placed_positions = []
+        for agent in self.agents:
+            while True:
+                pos = np.random.uniform(agent_radius, env_size - agent_radius, size=2)
+                angle = np.random.uniform(0, 360)
+                collision = False
+                for other_pos in placed_positions:
+                    if np.linalg.norm(pos - other_pos) < 2 * agent_radius:
+                        collision = True
+                        break
+                if not collision and all(
+                    np.linalg.norm(pos - obs["pos"]) > agent_radius + obs["radius"] for obs in self.obstacles
+                ):
+                    break
+            placed_positions.append(pos)
+            self.agent_states[agent] = {
+                "pos": pos,
+                "angle": angle,
+                "v_lin": 0.0,
+                "v_ang": 0.0
+            }
 
     def _init_landmarks(self):
-        pass  # Random placement of landmarks with distance constraints
+        self.landmarks = [
+            np.random.uniform(0, env_size, size=2)
+            for _ in range(self.num_landmarks)
+        ]
 
     def _init_obstacles(self):
-        pass  # Random placement and random sizes
+        self.obstacles = []
+        for _ in range(self.num_obstacles):
+            pos = np.random.uniform(0, env_size, size=2)
+            radius = np.random.uniform(obstacle_size_min, obstacle_size_max)
+            self.obstacles.append({"pos": pos, "radius": radius})
 
     def _apply_actions(self, actions):
         pass  # Update linear/angular velocity based on dV inputs and clamp
