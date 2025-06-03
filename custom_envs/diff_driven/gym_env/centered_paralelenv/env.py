@@ -229,7 +229,24 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.agent_vel_ang = torch.stack(self.agent_vel_ang)
 
     def _init_landmarks(self):
-        self.landmarks = torch.rand((self.num_landmarks, 2), device=device) * self.env_size
+        self.landmarks = []
+        attempts = 0
+        max_attempts = 1000
+        while len(self.landmarks) < self.num_landmarks and attempts < max_attempts:
+            candidate = torch.rand(2, device=device) * self.env_size
+            valid = True
+            for existing in self.landmarks:
+                if torch.norm(candidate - existing) < 2 * self.agent_radius:
+                    valid = False
+                    break
+            if valid:
+                self.landmarks.append(candidate)
+            attempts += 1
+
+        if len(self.landmarks) < self.num_landmarks:
+            raise RuntimeError("Failed to place all landmarks with minimum separation.")
+
+        self.landmarks = torch.stack(self.landmarks)
 
     def _init_obstacles(self):
         self.obstacle_pos = torch.rand((self.num_obstacles, 2), device=device) * self.env_size
