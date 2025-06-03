@@ -143,19 +143,21 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Geometric center of landmarks
         lm_center = self.landmarks.mean(dim=0)
 
-        # Vectors from center to landmarks
-        vectors = self.landmarks - lm_center  # (N_lm, 2)
+        # === Landmarks ===
+        lm_vectors = self.landmarks - lm_center  # (N_lm, 2)
+        lm_dists = torch.norm(lm_vectors, dim=1)
+        lm_order = torch.argsort(lm_dists)
+        lm_sorted = self.landmarks[lm_order]
+        vectors = lm_sorted - lm_center  # reassign after sorting
 
-        # Distances and angles
+        # Weighted circular mean for x-axis
         distances = torch.norm(vectors, dim=1)
         angles = torch.atan2(vectors[:, 1], vectors[:, 0])
-
-        # Weighted circular mean for x-axis orientation
         sin_sum = torch.sum(torch.sin(angles) * distances)
         cos_sum = torch.sum(torch.cos(angles) * distances)
         mean_angle = torch.atan2(sin_sum, cos_sum)
 
-        # Rotation matrix to align Ox with weighted mean direction
+        # Rotation matrix
         cos_a = torch.cos(mean_angle)
         sin_a = torch.sin(mean_angle)
         rot_matrix = torch.stack([
@@ -163,25 +165,32 @@ class DiffDriveParallelEnv(ParallelEnv):
             torch.stack([-sin_a, cos_a])
         ])  # (2, 2)
 
-        # Transform landmarks to common rotated frame
+        # === Landmarks in rotated frame ===
         rel_landmarks = (vectors @ rot_matrix.T)  # (N_lm, 2)
 
-        # Transform obstacles to rotated frame
+        # === Obstacles ===
+        obs_vectors = self.obstacle_pos - lm_center
+        obs_dists = torch.norm(obs_vectors, dim=1)
+        obs_order = torch.argsort(obs_dists)
         rel_obstacles = torch.cat([
-            (self.obstacle_pos - lm_center) @ rot_matrix.T,
-            self.obstacle_radius.view(-1, 1)
+            (obs_vectors[obs_order] @ rot_matrix.T),  # positions
+            self.obstacle_radius[obs_order].view(-1, 1)
         ], dim=1)  # (N_obs, 3)
 
-        # Transform agent info to rotated frame
-        rel_agent_pos = (self.agent_pos - lm_center) @ rot_matrix.T
+        # === Agents ===
+        agent_vectors = self.agent_pos - lm_center
+        agent_dists = torch.norm(agent_vectors, dim=1)
+        agent_order = torch.argsort(agent_dists)
+
+        rel_agent_pos = (agent_vectors[agent_order] @ rot_matrix.T)  # (N, 2)
         rel_agent_data = torch.stack([
-            self.agent_vel_lin,  # (N,)
-            torch.deg2rad(self.agent_dir)  # (N,)
+            self.agent_vel_lin[agent_order],  # (N,)
+            torch.deg2rad(self.agent_dir[agent_order])  # (N,)
         ], dim=1)  # (N, 2)
 
         rel_agents = torch.cat([rel_agent_pos, rel_agent_data], dim=1)  # (N, 4)
 
-        # Concatenate everything into 1D state
+        # === Final state ===
         full_state = torch.cat([
             rel_landmarks.flatten(),
             rel_obstacles.flatten(),
@@ -343,21 +352,34 @@ class DiffDriveParallelEnv(ParallelEnv):
                 torch.stack([-torch.sin(angle_rad), torch.cos(angle_rad)])
             ])
 
-            # Relative positions of other agents (excluding self)
+            # === Relative positions of other agents ===
             mask = torch.arange(len(self.agents), device=pos.device) != idx
             other_pos = self.agent_pos[mask]  # (N-1, 2)
-            rel_agents = (other_pos - pos.unsqueeze(0)) @ rot.T  # (N-1, 2)
+            rel_agents = other_pos - pos.unsqueeze(0)
+            agent_dists = torch.norm(rel_agents, dim=1)
+            agent_order = torch.argsort(agent_dists)
+            rel_agents = (rel_agents[agent_order] @ rot.T)  # (N-1, 2)
 
-            # Relative landmarks
-            rel_landmarks = (self.landmarks - pos.unsqueeze(0)) @ rot.T  # (L, 2)
+            # === Relative positions of landmarks ===
+            rel_landmarks = self.landmarks - pos.unsqueeze(0)
+            landmark_dists = torch.norm(rel_landmarks, dim=1)
+            landmark_order = torch.argsort(landmark_dists)
+            rel_landmarks = (rel_landmarks[landmark_order] @ rot.T)  # (L, 2)
 
-            # Obstacle edge distances
-            dist_to_obs = torch.norm(self.obstacle_pos - pos.unsqueeze(0), dim=1)  # (M,)
+            # === Obstacle sensed distances ===
+            rel_obstacle = self.obstacle_pos - pos.unsqueeze(0)
+            dist_to_obs = torch.norm(rel_obstacle, dim=1)
             edge_dists = dist_to_obs - self.obstacle_radius  # (M,)
-            sensed_dists = torch.where(edge_dists < self.sens_range, edge_dists,
-                                       torch.tensor(0.0, device=pos.device))  # (M,)
+            obs_order = torch.argsort(dist_to_obs)
+            edge_dists_sorted = edge_dists[obs_order]
 
-            # Concatenate
+            sensed_dists = torch.where(
+                edge_dists_sorted < self.sens_range,
+                edge_dists_sorted,
+                torch.tensor(0.0, device=pos.device)
+            )  # (M,)
+
+            # === Final observation vector ===
             flat_obs = torch.cat([
                 rel_agents.flatten(),
                 rel_landmarks.flatten(),
