@@ -140,61 +140,55 @@ class DiffDriveParallelEnv(ParallelEnv):
             self.ax = None
 
     def state(self):
-        # Geometric center of landmarks
-        lm_center = self.landmarks.mean(dim=0)
-
-        # === Landmarks ===
-        lm_vectors = self.landmarks - lm_center  # (N_lm, 2)
+        # === Define reference frame ===
+        lm_center = self.landmarks.mean(dim=0)  # (2,)
+        lm_vectors = self.landmarks - lm_center  # (L, 2)
         lm_dists = torch.norm(lm_vectors, dim=1)
-        lm_order = torch.argsort(lm_dists)
-        lm_sorted = self.landmarks[lm_order]
-        vectors = lm_sorted - lm_center  # reassign after sorting
 
-        # Weighted circular mean for x-axis
-        distances = torch.norm(vectors, dim=1)
-        angles = torch.atan2(vectors[:, 1], vectors[:, 0])
-        sin_sum = torch.sum(torch.sin(angles) * distances)
-        cos_sum = torch.sum(torch.cos(angles) * distances)
+        # Weighted circular mean angle
+        angles = torch.atan2(lm_vectors[:, 1], lm_vectors[:, 0])
+        sin_sum = torch.sum(torch.sin(angles) * lm_dists)
+        cos_sum = torch.sum(torch.cos(angles) * lm_dists)
         mean_angle = torch.atan2(sin_sum, cos_sum)
 
-        # Rotation matrix
-        cos_a = torch.cos(mean_angle)
-        sin_a = torch.sin(mean_angle)
+        # Rotation matrix to align with weighted direction
+        cos_a, sin_a = torch.cos(mean_angle), torch.sin(mean_angle)
         rot_matrix = torch.stack([
             torch.stack([cos_a, sin_a]),
             torch.stack([-sin_a, cos_a])
         ])  # (2, 2)
 
-        # === Landmarks in rotated frame ===
-        rel_landmarks = (vectors @ rot_matrix.T)  # (N_lm, 2)
+        # === Landmarks (sorted by distance) ===
+        lm_order = torch.argsort(lm_dists)
+        lm_rel_pos = (lm_vectors[lm_order] @ rot_matrix.T)  # (L, 2)
 
-        # === Obstacles ===
-        obs_vectors = self.obstacle_pos - lm_center
-        obs_dists = torch.norm(obs_vectors, dim=1)
-        obs_order = torch.argsort(obs_dists)
-        rel_obstacles = torch.cat([
-            (obs_vectors[obs_order] @ rot_matrix.T),  # positions
-            self.obstacle_radius[obs_order].view(-1, 1)
-        ], dim=1)  # (N_obs, 3)
+        # === Agents (sorted by distance) ===
+        ag_vectors = self.agent_pos - lm_center  # (N, 2)
+        ag_dists = torch.norm(ag_vectors, dim=1)
+        ag_order = torch.argsort(ag_dists)
 
-        # === Agents ===
-        agent_vectors = self.agent_pos - lm_center
-        agent_dists = torch.norm(agent_vectors, dim=1)
-        agent_order = torch.argsort(agent_dists)
+        ag_rel_pos = (ag_vectors[ag_order] @ rot_matrix.T)  # (N, 2)
+        ag_dirs = torch.deg2rad(self.agent_dir[ag_order]).unsqueeze(1)  # (N, 1)
+        ag_vlin = self.agent_vel_lin[ag_order].unsqueeze(1)  # (N, 1)
+        ag_vang = self.agent_vel_ang[ag_order].unsqueeze(1)  # (N, 1)
 
-        rel_agent_pos = (agent_vectors[agent_order] @ rot_matrix.T)  # (N, 2)
-        rel_agent_data = torch.stack([
-            self.agent_vel_lin[agent_order],  # (N,)
-            torch.deg2rad(self.agent_dir[agent_order])  # (N,)
-        ], dim=1)  # (N, 2)
+        ag_state = torch.cat([ag_rel_pos, ag_dirs, ag_vlin, ag_vang], dim=1)  # (N, 5)
 
-        rel_agents = torch.cat([rel_agent_pos, rel_agent_data], dim=1)  # (N, 4)
+        # === Obstacles (sorted by distance) ===
+        ob_vectors = self.obstacle_pos - lm_center  # (M, 2)
+        ob_dists = torch.norm(ob_vectors, dim=1)
+        ob_order = torch.argsort(ob_dists)
+
+        ob_rel_pos = (ob_vectors[ob_order] @ rot_matrix.T)  # (M, 2)
+        ob_radii = self.obstacle_radius[ob_order].unsqueeze(1)  # (M, 1)
+
+        ob_state = torch.cat([ob_rel_pos, ob_radii], dim=1)  # (M, 3)
 
         # === Final state ===
         full_state = torch.cat([
-            rel_landmarks.flatten(),
-            rel_obstacles.flatten(),
-            rel_agents.flatten()
+            lm_rel_pos.flatten(),  # 2L
+            ag_state.flatten(),  # 5N
+            ob_state.flatten()  # 3M
         ])
 
         return full_state.detach().cpu().numpy().astype(np.float32)
