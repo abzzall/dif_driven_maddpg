@@ -341,52 +341,83 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def _get_all_observations(self):
         observations = {}
+        N = len(self.agents)
+        M = self.num_obstacles
+        device = self.agent_pos.device
 
         for idx, agent_id in enumerate(self.agents):
             pos = self.agent_pos[idx]  # (2,)
             angle_rad = torch.deg2rad(self.agent_dir[idx])  # scalar
 
-            # Rotation matrix for local frame (2x2)
+            # Local rotation matrix
+            cos_a = torch.cos(angle_rad)
+            sin_a = torch.sin(angle_rad)
             rot = torch.stack([
-                torch.stack([torch.cos(angle_rad), torch.sin(angle_rad)]),
-                torch.stack([-torch.sin(angle_rad), torch.cos(angle_rad)])
-            ])
+                torch.stack([cos_a, sin_a]),
+                torch.stack([-sin_a, cos_a])
+            ])  # (2, 2)
 
-            # === Relative positions of other agents ===
-            mask = torch.arange(len(self.agents), device=pos.device) != idx
-            other_pos = self.agent_pos[mask]  # (N-1, 2)
-            rel_agents = other_pos - pos.unsqueeze(0)
-            agent_dists = torch.norm(rel_agents, dim=1)
-            agent_order = torch.argsort(agent_dists)
-            rel_agents = (rel_agents[agent_order] @ rot.T)  # (N-1, 2)
+            # === Own motion ===
+            own_lin = self.agent_vel_lin[idx].unsqueeze(0)  # (1,)
+            own_ang = self.agent_vel_ang[idx].unsqueeze(0)  # (1,)
 
-            # === Relative positions of landmarks ===
-            rel_landmarks = self.landmarks - pos.unsqueeze(0)
-            landmark_dists = torch.norm(rel_landmarks, dim=1)
-            landmark_order = torch.argsort(landmark_dists)
-            rel_landmarks = (rel_landmarks[landmark_order] @ rot.T)  # (L, 2)
+            # === Other agents ===
+            mask = torch.arange(N, device=device) != idx
+            other_pos = self.agent_pos[mask]
+            rel_vec = other_pos - pos
+            dists = torch.norm(rel_vec, dim=1)
+            order = torch.argsort(dists)
+            rel_pos = (rel_vec[order] @ rot.T)
+            other_dir = torch.deg2rad(self.agent_dir[mask])[order]
+            rel_dir = other_dir - angle_rad
+            rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
+            lin_vels = self.agent_vel_lin[mask][order]
+            ang_vels = self.agent_vel_ang[mask][order]
 
-            # === Obstacle sensed distances ===
-            rel_obstacle = self.obstacle_pos - pos.unsqueeze(0)
-            dist_to_obs = torch.norm(rel_obstacle, dim=1)
-            edge_dists = dist_to_obs - self.obstacle_radius  # (M,)
-            obs_order = torch.argsort(dist_to_obs)
-            edge_dists_sorted = edge_dists[obs_order]
+            # === Landmarks ===
+            rel_lm = self.landmarks - pos
+            lm_dists = torch.norm(rel_lm, dim=1)
+            lm_order = torch.argsort(lm_dists)
+            rel_lm_local = (rel_lm[lm_order] @ rot.T)
 
-            sensed_dists = torch.where(
-                edge_dists_sorted < self.sens_range,
-                edge_dists_sorted,
-                torch.tensor(0.0, device=pos.device)
-            )  # (M,)
+            # === Obstacles ===
+            obs_vec = self.obstacle_pos - pos
+            center_dists = torch.norm(obs_vec, dim=1)
+            edge_dists = center_dists - self.obstacle_radius
+            in_range = edge_dists < self.sens_range
+            obs_idx = torch.argsort(edge_dists)
+            obs_idx = obs_idx[in_range[obs_idx]]
 
-            # === Final observation vector ===
-            flat_obs = torch.cat([
-                rel_agents.flatten(),
-                rel_landmarks.flatten(),
-                sensed_dists
-            ]).to(torch.float32)
+            edge_dists_in_range = edge_dists[obs_idx]
+            obs_vec_local = obs_vec[obs_idx] @ rot.T
+            obs_angles = torch.atan2(obs_vec_local[:, 1], obs_vec_local[:, 0])
 
-            observations[agent_id] = flat_obs
+            # === Pad obstacle distances and angles ===
+            pad_len = M - len(obs_idx)
+            if pad_len > 0:
+                edge_dists_in_range = torch.cat([
+                    edge_dists_in_range,
+                    torch.zeros(pad_len, device=device)
+                ])
+                obs_angles = torch.cat([
+                    obs_angles,
+                    torch.zeros(pad_len, device=device)
+                ])
+
+            # === Final observation ===
+            obs = torch.cat([
+                own_lin,
+                own_ang,
+                rel_pos.flatten(),
+                rel_dir,
+                lin_vels,
+                ang_vels,
+                rel_lm_local.flatten(),
+                edge_dists_in_range,
+                obs_angles
+            ], dim=0).to(torch.float32)
+
+            observations[agent_id] = obs
 
         return observations
 
