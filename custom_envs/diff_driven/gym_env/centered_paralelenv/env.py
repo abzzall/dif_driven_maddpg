@@ -3,13 +3,15 @@ from gymnasium import spaces
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 import matplotlib.pyplot as plt
+import torch
 
 from config import (
     env_name, num_agents, obs_dim, action_dim, obs_low, obs_high,
     act_low, act_high, render_mode,
     env_size, num_obstacles, v_lin_max, v_ang_max, dv_lin_max,
     dv_ang_max, agent_radius, safe_dist, sens_range, max_steps,
-    obstacle_size_min, obstacle_size_max, collision_penalty_scale
+    obstacle_size_min, obstacle_size_max, collision_penalty_scale,
+    device
 )
 
 
@@ -22,22 +24,22 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.agents = [f"agent_{i}" for i in range(self._num_agents)]
         self.possible_agents = self.agents[:]
 
-        # World settings from config
-        self.env_size = env_size
+        # World settings (converted to CUDA tensors)
+        self.env_size = torch.tensor(env_size, device=device)
         self.num_landmarks = self._num_agents
         self.num_obstacles = num_obstacles
-        self.v_lin_max = v_lin_max
-        self.v_ang_max = v_ang_max
-        self.dv_lin_max = dv_lin_max
-        self.dv_ang_max = dv_ang_max
-        self.agent_radius = agent_radius
-        self.safe_dist = safe_dist
-        self.sens_range = sens_range
+        self.v_lin_max = torch.tensor(v_lin_max, device=device)
+        self.v_ang_max = torch.tensor(v_ang_max, device=device)
+        self.dv_lin_max = torch.tensor(dv_lin_max, device=device)
+        self.dv_ang_max = torch.tensor(dv_ang_max, device=device)
+        self.agent_radius = torch.tensor(agent_radius, device=device)
+        self.safe_dist = torch.tensor(safe_dist, device=device)
+        self.sens_range = torch.tensor(sens_range, device=device)
 
         self.max_steps = max_steps
         self.timestep = 0
 
-        # Spaces
+        # Observation and action spaces (remain on CPU)
         self.observation_spaces = {
             agent: spaces.Box(low=obs_low, high=obs_high, shape=(obs_dim,), dtype=np.float32)
             for agent in self.agents
@@ -47,264 +49,342 @@ class DiffDriveParallelEnv(ParallelEnv):
             for agent in self.agents
         }
 
-        # State containers
-        self.agent_states = {}
-        self.landmarks = []
-        self.obstacles = []
+        # Agent states (as tensors)
+        self.agent_pos = torch.zeros((self._num_agents, 2), device=device)
+        self.agent_vel_lin = torch.zeros((self._num_agents,), device=device)
+        self.agent_vel_ang = torch.zeros((self._num_agents,), device=device)
+        self.agent_dir = torch.zeros((self._num_agents,), device=device)
 
+        # Landmarks and obstacles
+        self.landmarks = torch.zeros((self.num_landmarks, 2), device=device)
+        self.obstacle_pos = torch.zeros((self.num_obstacles, 2), device=device)
+        self.obstacle_radius = torch.zeros((self.num_obstacles,), device=device)
+
+        # Rendering
         self.fig = None
         self.ax = None
 
     def reset(self, seed=None, options=None):
         self.timestep = 0
         self.agents = self.possible_agents[:]
-        self._init_agents()
-        self._init_landmarks()
-        self._init_obstacles()
+        # Reinitialize all entities
+        self._init_agents()  # fills self.agent_pos, self.agent_vel_lin, etc.
+        self._init_landmarks()  # fills self.landmarks
+        self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
+        # Get observations (in CUDA, then detach+cpu if gym requires)
         observations = self._get_all_observations()
         return observations
 
     def step(self, actions):
         self.timestep += 1
-        self._apply_actions(actions)
-        self._update_positions()
-        self._handle_collisions()
 
-        observations = self._get_all_observations()
-        rewards = self._compute_rewards()
+        # Convert actions (dict of np arrays) to a tensor on CUDA
+        action_tensor = torch.stack(
+            [torch.tensor(actions[agent], device=device, dtype=torch.float32) for agent in self.agents]
+        )  # shape: (num_agents, 2)
+        # Apply actions, update movement, handle collisions
+        self._apply_actions(action_tensor)  # dV_lin and dV_ang
+        self._update_positions()  # uses self.agent_vel_lin, self.agent_dir
+        self._handle_collisions()  # modifies self.agent_pos if needed
+        # Generate new observations and rewards
+        observations = self._get_all_observations()  # dict of numpy arrays
+        rewards = self._compute_rewards()  # dict of floats (per-agent)
+        # Termination flags (fixed duration)
         terminations = {agent: self.timestep >= self.max_steps for agent in self.agents}
         truncations = {agent: False for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
+
         return observations, rewards, terminations, truncations, infos
+
     def render(self):
         if self.fig is None or self.ax is None:
             self.fig, self.ax = plt.subplots(figsize=(6, 6))
         self.ax.clear()
-        self.ax.set_xlim(0, self.env_size)
-        self.ax.set_ylim(0, self.env_size)
+        self.ax.set_xlim(0, self.env_size.item())
+        self.ax.set_ylim(0, self.env_size.item())
         self.ax.set_aspect('equal')
         self.ax.set_title(f"Step {self.timestep}")
 
         # Draw obstacles
-        for ob in self.obstacles:
-            circle = plt.Circle(ob["pos"], ob["radius"], color='gray', alpha=0.5)
+        for i in range(self.num_obstacles):
+
+            pos = self.obstacle_pos[i].detach().cpu().numpy()
+            radius = self.obstacle_radius[i].item()
+            circle = plt.Circle(pos, radius, color='gray', alpha=0.5)
             self.ax.add_patch(circle)
 
         # Draw landmarks
-        for lm in self.landmarks:
+        for lm in self.landmarks.detach().cpu().numpy():
             self.ax.plot(lm[0], lm[1], 'rx', markersize=8)
 
         # Draw agents
-        for aid, state in self.agent_states.items():
-            pos = state["pos"]
-            angle = np.deg2rad(state["angle"])
-            circle = plt.Circle(pos, self.agent_radius, color='blue', alpha=0.6)
+        for i in range(self._num_agents):
+            pos = self.agent_pos[i].detach().cpu().numpy()
+            angle_deg = self.agent_dir[i].item()
+            angle_rad = np.deg2rad(angle_deg)
+
+            circle = plt.Circle(pos, self.agent_radius.item(), color='blue', alpha=0.6)
             self.ax.add_patch(circle)
-            dx = self.agent_radius * np.cos(angle)
-            dy = self.agent_radius * np.sin(angle)
+
+            dx = self.agent_radius.item() * np.cos(angle_rad)
+            dy = self.agent_radius.item() * np.sin(angle_rad)
             self.ax.arrow(pos[0], pos[1], dx, dy, head_width=0.2, head_length=0.2, fc='blue', ec='blue')
 
         plt.pause(0.001)
 
     def close(self):
-        if self.fig:
+        if self.fig is not None:
+            import matplotlib.pyplot as plt
             plt.close(self.fig)
             self.fig = None
             self.ax = None
+
     def state(self):
         # Geometric center of landmarks
-        lm_center = np.mean(self.landmarks, axis=0)
+        lm_center = self.landmarks.mean(dim=0)
 
-        # Weighted circular mean angle for 0x axis
-        vectors = [lm - lm_center for lm in self.landmarks]
-        distances = np.linalg.norm(vectors, axis=1)
-        angles = np.arctan2([v[1] for v in vectors], [v[0] for v in vectors])
-        sin_sum = np.sum(np.sin(angles) * distances)
-        cos_sum = np.sum(np.cos(angles) * distances)
-        mean_angle = np.arctan2(sin_sum, cos_sum)
-        rot_matrix = np.array([
-            [np.cos(mean_angle), np.sin(mean_angle)],
-            [-np.sin(mean_angle), np.cos(mean_angle)]
+        # Vectors from center to landmarks
+        vectors = self.landmarks - lm_center  # (N_lm, 2)
+
+        # Distances and angles
+        distances = torch.norm(vectors, dim=1)
+        angles = torch.atan2(vectors[:, 1], vectors[:, 0])
+
+        # Weighted circular mean for x-axis orientation
+        sin_sum = torch.sum(torch.sin(angles) * distances)
+        cos_sum = torch.sum(torch.cos(angles) * distances)
+        mean_angle = torch.atan2(sin_sum, cos_sum)
+
+        # Rotation matrix to align Ox with weighted mean direction
+        cos_a = torch.cos(mean_angle)
+        sin_a = torch.sin(mean_angle)
+        rot_matrix = torch.stack([
+            torch.stack([cos_a, sin_a]),
+            torch.stack([-sin_a, cos_a])
+        ])  # (2, 2)
+
+        # Transform landmarks to common rotated frame
+        rel_landmarks = (vectors @ rot_matrix.T)  # (N_lm, 2)
+
+        # Transform obstacles to rotated frame
+        rel_obstacles = torch.cat([
+            (self.obstacle_pos - lm_center) @ rot_matrix.T,
+            self.obstacle_radius.view(-1, 1)
+        ], dim=1)  # (N_obs, 3)
+
+        # Transform agent info to rotated frame
+        rel_agent_pos = (self.agent_pos - lm_center) @ rot_matrix.T
+        rel_agent_data = torch.stack([
+            self.agent_vel_lin,  # (N,)
+            torch.deg2rad(self.agent_dir)  # (N,)
+        ], dim=1)  # (N, 2)
+
+        rel_agents = torch.cat([rel_agent_pos, rel_agent_data], dim=1)  # (N, 4)
+
+        # Concatenate everything into 1D state
+        full_state = torch.cat([
+            rel_landmarks.flatten(),
+            rel_obstacles.flatten(),
+            rel_agents.flatten()
         ])
 
-        # Landmarks in rotated frame
-        rel_landmarks = [rot_matrix @ (lm - lm_center) for lm in self.landmarks]
-
-        # Obstacles: position and size
-        rel_obstacles = [
-            np.concatenate([rot_matrix @ (ob["pos"] - lm_center), [ob["radius"]]])
-            for ob in self.obstacles
-        ]
-
-        # Agents: position, linear speed, angle
-        rel_agents = [
-            np.concatenate([
-                rot_matrix @ (st["pos"] - lm_center),
-                [st["v_lin"], np.deg2rad(st["angle"])]
-            ])
-            for st in self.agent_states.values()
-        ]
-
-        full_state = np.concatenate([
-            np.array(rel_landmarks).flatten(),
-            np.array(rel_obstacles).flatten(),
-            np.array(rel_agents).flatten()
-        ])
-        return full_state.astype(np.float32)
+        return full_state.detach().cpu().numpy().astype(np.float32)
 
     def _init_agents(self):
-        self.agent_states = {}
+        self.agent_pos = []
+        self.agent_dir = []
+        self.agent_vel_lin = []
+        self.agent_vel_ang = []
+
         placed_positions = []
-        for agent in self.agents:
+
+        for _ in range(self._num_agents):
             while True:
-                pos = np.random.uniform(agent_radius, env_size - agent_radius, size=2)
+                pos = np.random.uniform(self.agent_radius.item(), self.env_size - self.agent_radius.item(), size=2)
                 angle = np.random.uniform(0, 360)
+
+                # Check collision with other agents
                 collision = False
                 for other_pos in placed_positions:
-                    if np.linalg.norm(pos - other_pos) < 2 * agent_radius:
+                    if np.linalg.norm(pos - other_pos) < 2 * self.agent_radius.item():
                         collision = True
                         break
+
+                # Check collision with obstacles
                 if not collision and all(
-                    np.linalg.norm(pos - obs["pos"]) > agent_radius + obs["radius"] for obs in self.obstacles
+                        np.linalg.norm(pos - ob_pos.detach().cpu().numpy()) > self.agent_radius.item() + ob_rad.item()
+                        for ob_pos, ob_rad in zip(self.obstacle_pos, self.obstacle_radius)
                 ):
                     break
+
             placed_positions.append(pos)
-            self.agent_states[agent] = {
-                "pos": pos,
-                "angle": angle,
-                "v_lin": 0.0,
-                "v_ang": 0.0
-            }
+            self.agent_pos.append(torch.tensor(pos, dtype=torch.float32, device=device))
+            self.agent_dir.append(torch.tensor(angle, dtype=torch.float32, device=device))
+            self.agent_vel_lin.append(torch.tensor(0.0, dtype=torch.float32, device=device))
+            self.agent_vel_ang.append(torch.tensor(0.0, dtype=torch.float32, device=device))
+
+        self.agent_pos = torch.stack(self.agent_pos)
+        self.agent_dir = torch.stack(self.agent_dir)
+        self.agent_vel_lin = torch.stack(self.agent_vel_lin)
+        self.agent_vel_ang = torch.stack(self.agent_vel_ang)
 
     def _init_landmarks(self):
-        self.landmarks = [
-            np.random.uniform(0, env_size, size=2)
-            for _ in range(self.num_landmarks)
-        ]
+        self.landmarks = torch.rand((self.num_landmarks, 2), device=device) * self.env_size
 
     def _init_obstacles(self):
-        self.obstacles = []
-        for _ in range(self.num_obstacles):
-            pos = np.random.uniform(0, env_size, size=2)
-            radius = np.random.uniform(obstacle_size_min, obstacle_size_max)
-            self.obstacles.append({"pos": pos, "radius": radius})
+        self.obstacle_pos = torch.rand((self.num_obstacles, 2), device=device) * self.env_size
+        self.obstacle_radius = (
+                torch.rand(self.num_obstacles, device=device) * (obstacle_size_max - obstacle_size_min)
+                + obstacle_size_min
+        )
 
     def _apply_actions(self, actions):
-        for agent, action in actions.items():
-            state = self.agent_states[agent]
-            dv_lin = np.clip(action[0], -self.dv_lin_max, self.dv_lin_max)
-            dv_ang = np.clip(action[1], -self.dv_ang_max, self.dv_ang_max)
+        # Extract actions into a tensor in correct order
+        action_tensor = torch.tensor(
+            [actions[agent] for agent in self.agents],
+            dtype=torch.float32,
+            device=device
+        )  # Shape: (N, 2)
 
-            state["v_lin"] = np.clip(state["v_lin"] + dv_lin, 0, self.v_lin_max)
-            state["v_ang"] = np.clip(state["v_ang"] + dv_ang, -self.v_ang_max, self.v_ang_max)
+        dv_lin = action_tensor[:, 0].clamp(-self.dv_lin_max, self.dv_lin_max)
+        dv_ang = action_tensor[:, 1].clamp(-self.dv_ang_max, self.dv_ang_max)
+
+        # Update velocities with clamping
+        self.agent_vel_lin = (self.agent_vel_lin + dv_lin).clamp(0, self.v_lin_max.item())
+        self.agent_vel_ang = (self.agent_vel_ang + dv_ang).clamp(-self.v_ang_max, self.v_ang_max)
 
     def _update_positions(self):
-        for agent in self.agents:
-            state = self.agent_states[agent]
-            theta_rad = np.deg2rad(state["angle"])
-            dx = state["v_lin"] * np.cos(theta_rad)
-            dy = state["v_lin"] * np.sin(theta_rad)
+        # Convert angles to radians
+        theta_rad = torch.deg2rad(self.agent_dir)
 
-            new_pos = state["pos"] + np.array([dx, dy])
-            new_pos = np.clip(new_pos, self.agent_radius, self.env_size - self.agent_radius)
-            state["pos"] = new_pos
-            state["angle"] = (state["angle"] + state["v_ang"]) % 360
+        # Compute deltas
+        dx = self.agent_vel_lin * torch.cos(theta_rad)
+        dy = self.agent_vel_lin * torch.sin(theta_rad)
+        delta = torch.stack([dx, dy], dim=1)  # shape: (N, 2)
+
+        # Update positions
+        self.agent_pos = self.agent_pos + delta
+
+        # Clamp to bounds
+        self.agent_pos = torch.clamp(
+            self.agent_pos,
+            min=self.agent_radius,
+            max=self.env_size - self.agent_radius,
+        )
+
+        # Update angle
+        self.agent_dir = (self.agent_dir + self.agent_vel_ang) % 360
 
     def _handle_collisions(self):
-        for i, agent_i in enumerate(self.agents):
-            ai = self.agent_states[agent_i]
-            for j, agent_j in enumerate(self.agents):
-                if i >= j:
-                    continue
-                aj = self.agent_states[agent_j]
-                vec = aj["pos"] - ai["pos"]
-                dist = np.linalg.norm(vec)
-                if dist < 2 * self.agent_radius:
-                    overlap = 2 * self.agent_radius - dist
-                    if dist > 0:
-                        direction = vec / dist
-                        ai["pos"] -= direction * (overlap / 2)
-                        aj["pos"] += direction * (overlap / 2)
-                    ai["v_lin"] = 0
-                    aj["v_lin"] = 0
+        # --- Agent-Agent Collisions ---
+        pos_i = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
+        pos_j = self.agent_pos.unsqueeze(0)  # (1, N, 2)
+        diff = pos_j - pos_i  # (N, N, 2)
+        dists = torch.norm(diff, dim=-1)  # (N, N)
 
-            for ob in self.obstacles:
-                vec = ob["pos"] - ai["pos"]
-                dist = np.linalg.norm(vec)
-                if dist < self.agent_radius + ob["radius"]:
-                    overlap = self.agent_radius + ob["radius"] - dist
+        # Create mask for actual collisions (avoid self)
+        N = self.agent_pos.shape[0]
+        collision_mask = (dists < 2 * self.agent_radius) & (dists > 0)
+
+        # Process collisions
+        i_indices, j_indices = collision_mask.nonzero(as_tuple=True)
+        for i, j in zip(i_indices.tolist(), j_indices.tolist()):
+            vec = self.agent_pos[j] - self.agent_pos[i]
+            dist = torch.norm(vec)
+            if dist > 0:
+                direction = vec / dist
+                overlap = 2 * self.agent_radius - dist
+                self.agent_pos[i] -= direction * (overlap / 2)
+                self.agent_pos[j] += direction * (overlap / 2)
+                self.agent_vel_lin[i] = 0.0
+                self.agent_vel_lin[j] = 0.0
+
+        # --- Agent-Obstacle Collisions ---
+        for i in range(self._num_agents):
+            pos_i = self.agent_pos[i]
+            for j in range(self.num_obstacles):
+                vec = self.obstacle_pos[j] - pos_i
+                dist = torch.norm(vec)
+                min_dist = self.agent_radius + self.obstacle_radius[j]
+                if dist < min_dist:
                     if dist > 0:
                         direction = -vec / dist
-                        ai["pos"] += direction * overlap
-                    ai["v_lin"] = 0
+                        overlap = min_dist - dist
+                        self.agent_pos[i] += direction * overlap
+                    self.agent_vel_lin[i] = 0.0
 
     def _get_all_observations(self):
         observations = {}
-        for agent_id in self.agents:
-            agent = self.agent_states[agent_id]
-            pos = agent["pos"]
-            angle = np.deg2rad(agent["angle"])
 
-            rot_matrix = np.array([
-                [np.cos(angle), np.sin(angle)],
-                [-np.sin(angle), np.cos(angle)]
+        for idx, agent_id in enumerate(self.agents):
+            pos = self.agent_pos[idx]  # (2,)
+            angle_rad = torch.deg2rad(self.agent_dir[idx])  # scalar
+
+            # Rotation matrix for local frame (2x2)
+            rot = torch.stack([
+                torch.stack([torch.cos(angle_rad), torch.sin(angle_rad)]),
+                torch.stack([-torch.sin(angle_rad), torch.cos(angle_rad)])
             ])
 
-            # Other agents (excluding self)
-            rel_agents = [
-                rot_matrix @ (self.agent_states[other]["pos"] - pos)
-                for other in self.agents if other != agent_id
-            ]
+            # Relative positions of other agents (excluding self)
+            mask = torch.arange(len(self.agents), device=pos.device) != idx
+            other_pos = self.agent_pos[mask]  # (N-1, 2)
+            rel_agents = (other_pos - pos.unsqueeze(0)) @ rot.T  # (N-1, 2)
 
-            # Landmarks
-            rel_landmarks = [
-                rot_matrix @ (lm - pos)
-                for lm in self.landmarks
-            ]
+            # Relative landmarks
+            rel_landmarks = (self.landmarks - pos.unsqueeze(0)) @ rot.T  # (L, 2)
 
-            # Obstacle distances in sensing range
-            obs_dists = []
-            for obs in self.obstacles:
-                center_dist = np.linalg.norm(pos - obs["pos"])
-                edge_dist = center_dist - obs["radius"]
-                obs_dists.append(edge_dist if edge_dist < self.sens_range else 0.0)
+            # Obstacle edge distances
+            dist_to_obs = torch.norm(self.obstacle_pos - pos.unsqueeze(0), dim=1)  # (M,)
+            edge_dists = dist_to_obs - self.obstacle_radius  # (M,)
+            sensed_dists = torch.where(edge_dists < self.sens_range, edge_dists,
+                                       torch.tensor(0.0, device=pos.device))  # (M,)
 
-            flat_obs = np.concatenate([
-                np.array(rel_agents).flatten(),
-                np.array(rel_landmarks).flatten(),
-                np.array(obs_dists)
-            ])
-            observations[agent_id] = flat_obs.astype(np.float32)
+            # Concatenate
+            flat_obs = torch.cat([
+                rel_agents.flatten(),
+                rel_landmarks.flatten(),
+                sensed_dists
+            ]).to(torch.float32)
+
+            observations[agent_id] = flat_obs
+
         return observations
+
     def _compute_rewards(self):
-        # Distance cost matrix (agents x landmarks)
-        agent_positions = [self.agent_states[a]["pos"] for a in self.agents]
+        N = self._num_agents
+        device = self.agent_pos.device
+
+        # ----- Hungarian Assignment: agents <-> landmarks -----
+        agent_pos_np = self.agent_pos.cpu().numpy()
+        landmark_np = self.landmarks.cpu().numpy()
         cost_matrix = np.linalg.norm(
-            np.expand_dims(agent_positions, 1) - np.expand_dims(self.landmarks, 0), axis=2
+            agent_pos_np[:, None, :] - landmark_np[None, :, :], axis=2
         )
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         total_distance = cost_matrix[row_ind, col_ind].sum()
-        base_reward = -total_distance / self._num_agents
+        base_reward = -total_distance / N
 
-        # Local collision penalties
-        penalties = {a: 0.0 for a in self.agents}
-        for i, aid in enumerate(self.agents):
-            ai = self.agent_states[aid]
-            for j, bid in enumerate(self.agents):
-                if i >= j:
-                    continue
-                aj = self.agent_states[bid]
-                d = np.linalg.norm(ai["pos"] - aj["pos"])
-                if d < self.safe_dist:
-                    p = 10 * np.exp(-d)
-                    penalties[aid] -= p
-                    penalties[bid] -= p
-            for ob in self.obstacles:
-                d = np.linalg.norm(ai["pos"] - ob["pos"]) - ob["radius"]
-                if d < self.safe_dist:
-                    penalties[aid] -= collision_penalty_scale * np.exp(-d)
+        # ----- Collision Penalties -----
+        penalties = torch.zeros(N, device=device)
 
+        # Agent–Agent collision penalty
+        delta = self.agent_pos.unsqueeze(1) - self.agent_pos.unsqueeze(0)  # (N, N, 2)
+        dist_matrix = torch.norm(delta, dim=2)  # (N, N)
+        mask = (dist_matrix < self.safe_dist) & (~torch.eye(N, dtype=torch.bool, device=device))
+        penalty_matrix = torch.exp(-dist_matrix) * mask  # (N, N)
+        penalties -= 10 * penalty_matrix.sum(dim=1)
 
-        # Total reward
-        rewards = {a: base_reward + penalties[a] for a in self.agents}
+        # Agent–Obstacle penalty
+        for i in range(N):
+            dist = torch.norm(self.agent_pos[i] - self.obstacle_pos, dim=1) - self.obstacle_radius  # (M,)
+            close = dist < self.safe_dist
+            penalties[i] -= collision_penalty_scale * torch.sum(torch.exp(-dist[close]))
+
+        # ----- Combine Base + Penalty -----
+        rewards = {
+            self.agents[i]: (base_reward + penalties[i].item())
+            for i in range(N)
+        }
         return rewards
+
