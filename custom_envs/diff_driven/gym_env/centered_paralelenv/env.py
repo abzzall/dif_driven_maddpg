@@ -52,6 +52,9 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.landmarks = []
         self.obstacles = []
 
+        self.fig = None
+        self.ax = None
+
     def reset(self, seed=None, options=None):
         self.timestep = 0
         self.agents = self.possible_agents[:]
