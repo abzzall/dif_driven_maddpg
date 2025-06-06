@@ -69,3 +69,10 @@ sens_range = 5 * v_lin_max
 obstacle_size_min=0.3
 obstacle_size_max=3
 
+# === Training and Replay ===
+buffer_size = 200_000               # Total number of joint transitions stored
+batch_size = 1024                   # Mini-batch size for training
+start_training_after = 10_000       # Steps to fill buffer before training
+gamma = 0.99                        # Discount factor
+tau = 0.005                         # For soft update of target networks
+
