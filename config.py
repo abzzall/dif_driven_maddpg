@@ -21,9 +21,9 @@ env_size = 10.0  # Map is 10x10 meters
 max_steps = 500  # Long enough for full behavior to emerge, short enough for stable training
 
 # ====== Observation, State, Action dimensions ======
-obs_dim = 78     # Per-agent observation dimension
-state_dim = 81   # Global state used by the critic
-action_dim = 2   # dVlin and dVang per agent
+# obs_dim = 78     # Per-agent observation dimension
+# state_dim = 81   # Global state used by the critic
+# action_dim = 2   # dVlin and dVang per agent
 
 # Observation and action space bounds
 obs_low = -1.0

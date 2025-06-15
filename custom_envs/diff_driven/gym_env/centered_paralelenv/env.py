@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from config import (
-    env_name, num_agents, obs_dim, action_dim, obs_low, obs_high,
+    env_name, num_agents, obs_low, obs_high,
     act_low, act_high, render_mode,
     env_size, num_obstacles, v_lin_max, v_ang_max, dv_lin_max,
     dv_ang_max, agent_radius, safe_dist, sens_range, max_steps,
@@ -39,13 +39,18 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.max_steps = max_steps
         self.timestep = 0
 
+
+        self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*5
+        self.action_dim=2
+        self.state_dim=5*self.num_agents+2*self.num_landmarks+3*self.num_obstacles
+
         # Observation and action spaces (remain on CPU)
         self.observation_spaces = {
-            agent: spaces.Box(low=obs_low, high=obs_high, shape=(obs_dim,), dtype=np.float32)
+            agent: spaces.Box(low=obs_low, high=obs_high, shape=(self.obs_dim,), dtype=np.float32)
             for agent in self.agents
         }
         self.action_spaces = {
-            agent: spaces.Box(low=act_low, high=act_high, shape=(action_dim,), dtype=np.float32)
+            agent: spaces.Box(low=act_low, high=act_high, shape=(self.action_dim,), dtype=np.float32)
             for agent in self.agents
         }
 
