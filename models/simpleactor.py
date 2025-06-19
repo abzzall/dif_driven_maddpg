@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import os
+
 
 class SimpleActor(nn.Module):
     """
@@ -15,7 +17,8 @@ class SimpleActor(nn.Module):
         std_scale=0.3,
         use_noise=True,
         lr=1e-3,
-        device='cpu'
+        device='cpu',
+        chckpnt_file='simple_actor.pth'
     ):
         super().__init__()
         self.device = torch.device(device)
@@ -43,6 +46,7 @@ class SimpleActor(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
         self.to(self.device)
         self._init_weights()
+        self.chckpnt_file = chckpnt_file
 
     def _init_weights(self):
         for m in self.modules():
@@ -70,3 +74,78 @@ class SimpleActor(nn.Module):
             return (mu + noise).clamp(-self.max_action, self.max_action)
         else:
             return mu.clamp(-self.max_action, self.max_action)
+    def save_checkpoint(self, filepath=None):
+        """
+        Saves model and optimizer state to a checkpoint file.
+        """
+        if filepath is None:
+            filepath = self.chckpnt_file
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict()
+        }
+        torch.save(checkpoint, filepath)
+        print(f"Checkpoint saved to {filepath}")
+
+    def load_checkpoint(self, filepath):
+        """
+        Loads model and optimizer state from a checkpoint file.
+        """
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"Checkpoint file '{filepath}' not found.")
+
+        checkpoint = torch.load(filepath, map_location=self.device)
+        self.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.to(self.device)
+        print(f"Checkpoint loaded from {filepath}")
+
+    def choose_action(self, observation, use_noise=True, eval_mode=True):
+        """
+        Selects action(s) for either a single agent or multiple agents.
+
+        Use cases:
+            - Training: per-agent or shared actor for stepping the environment
+            - Application: single-agent inference (real-time, deployment)
+
+        Args:
+            observation (list, np.ndarray, or torch.Tensor):
+                - shape [obs_dim]: for single agent
+                - shape [num_agents, obs_dim]: for shared actor
+
+            use_noise (bool): Add noise for exploration (True during training)
+            eval_mode (bool): Temporarily switch to eval mode for safe inference
+
+        Returns:
+            np.ndarray:
+                - shape [action_dim] for single agent
+                - shape [num_agents, action_dim] for shared actor
+        """
+
+        if not torch.is_tensor(observation):
+            observation = torch.tensor(observation, dtype=torch.float32)
+
+        if observation.ndim == 1:
+            # Single agent input: [obs_dim]
+            observation = observation.unsqueeze(0)  # → [1, obs_dim]
+            is_single = True
+        elif observation.ndim == 2:
+            # Shared actor input: [num_agents, obs_dim]
+            is_single = False
+        else:
+            raise ValueError(f"Invalid observation shape: {observation.shape}. Expected 1D or 2D tensor.")
+
+        observation = observation.to(self.device)
+
+        prev_mode = self.training
+        if eval_mode:
+            self.eval()
+
+        with torch.no_grad():
+            action = self.forward(observation, mean=not use_noise)
+
+        if eval_mode and prev_mode:
+            self.train()
+
+        action_np = action.cpu().numpy()
+        return action_np[0] if is_single else action_np
