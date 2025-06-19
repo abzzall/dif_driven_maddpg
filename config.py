@@ -76,3 +76,6 @@ start_training_after = 10_000       # Steps to fill buffer before training
 gamma = 0.99                        # Discount factor
 tau = 0.005                         # For soft update of target networks
 
+
+#n_games
+n_games = 50_000  # Total number of games to train the agents

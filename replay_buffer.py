@@ -4,7 +4,8 @@ from config import (
 )
 
 class ReplayBuffer:
-    def __init__(self, obs_dim, action_dim, state_dim, num_agents=num_agents, replay_buffer_size=replay_buffer_size, device=device):
+    def __init__(self, obs_dim, action_dim, state_dim, num_agents=num_agents, replay_buffer_size=replay_buffer_size,
+                 device=device):
         self.obs_buf = torch.zeros((replay_buffer_size, num_agents, obs_dim), dtype=torch.float32)
         self.act_buf = torch.zeros((replay_buffer_size, num_agents, action_dim), dtype=torch.float32)
         self.reward_buf = torch.zeros((replay_buffer_size, num_agents), dtype=torch.float32)
