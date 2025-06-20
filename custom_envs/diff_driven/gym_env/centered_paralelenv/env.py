@@ -335,7 +335,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         )
 
         # Update angle
-        self.agent_dir = self.agent_dir + self.agent_vel_ang
+        self.agent_dir = (self.agent_dir + self.agent_vel_ang + torch.pi) % (2 * torch.pi) - torch.pi
+
 
     def _handle_collisions(self):
         # --- Agent-Agent Collisions ---
