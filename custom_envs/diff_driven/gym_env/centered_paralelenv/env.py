@@ -20,6 +20,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def __init__(self):
         super().__init__()
+        self.device=device
         self._num_agents = num_agents
         self.agents = [f"agent_{i}" for i in range(self._num_agents)]
         self.possible_agents = self.agents[:]
@@ -79,6 +80,28 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Get observations (in CUDA, then detach+cpu if gym requires)
         observations = self._get_all_observations()
         return observations
+
+    def get_done_list(
+            self,
+            terminated: dict[str, bool],
+            truncated: dict[str, bool],
+            agent_ids: list[str] = None
+    ) -> list[bool]:
+        """
+        Returns a list of done flags (terminated or truncated) for each agent.
+
+        Args:
+            terminated (dict[str, bool]): Per-agent termination flags.
+            truncated (dict[str, bool]): Per-agent truncation flags.
+            agent_ids (list[str], optional): Ordered list of agent names.
+                                             Defaults to self.agents.
+
+        Returns:
+            list[bool]: Done status for each agent in the given order.
+        """
+        if agent_ids is None:
+            agent_ids = self.agents
+        return [terminated[agent] or truncated[agent] for agent in agent_ids]
 
     def step(self, actions):
         self.timestep += 1
@@ -457,3 +480,13 @@ class DiffDriveParallelEnv(ParallelEnv):
         }
         return rewards
 
+    def get_list_from_dict_by_agent_id(self, d:dict):
+        return torch.stack([
+            torch.tensor(d[agent], dtype=torch.float32, device=self.device)
+            for agent in self.agents
+        ])
+    def get_dict_from_list_by_agent_id(self, l:list):
+        return {
+            f"agent_{i}": l[i]
+            for i in range(min(self.num_agents, len(l)))
+        }
