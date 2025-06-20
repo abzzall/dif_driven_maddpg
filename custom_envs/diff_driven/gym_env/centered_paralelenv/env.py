@@ -69,60 +69,76 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Rendering
         self.fig = None
         self.ax = None
-
-    def reset(self, seed=None, options=None):
+    def _reset_episode(self):
         self.timestep = 0
         self.agents = self.possible_agents[:]
         # Reinitialize all entities
         self._init_agents()  # fills self.agent_pos, self.agent_vel_lin, etc.
         self._init_landmarks()  # fills self.landmarks
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
+
+    def reset_tensor(self):
+        self._reset_episode()
+        state = self.state()
+        observations=self.get_all_obs_tensor()
+        return state, observations
+
+    def reset(self, seed=None, options=None):
+        self._reset_episode()
         # Get observations (in CUDA, then detach+cpu if gym requires)
-        observations = self._get_all_observations()
+        observations = self.get_all_obs_dict()
         return observations
 
-    def get_done_list(
-            self,
-            terminated: dict[str, bool],
-            truncated: dict[str, bool],
-            agent_ids: list[str] = None
-    ) -> list[bool]:
-        """
-        Returns a list of done flags (terminated or truncated) for each agent.
-
-        Args:
-            terminated (dict[str, bool]): Per-agent termination flags.
-            truncated (dict[str, bool]): Per-agent truncation flags.
-            agent_ids (list[str], optional): Ordered list of agent names.
-                                             Defaults to self.agents.
-
-        Returns:
-            list[bool]: Done status for each agent in the given order.
-        """
-        if agent_ids is None:
-            agent_ids = self.agents
-        return [terminated[agent] or truncated[agent] for agent in agent_ids]
-
     def step(self, actions):
-        self.timestep += 1
-
         # Convert actions (dict of np arrays) to a tensor on CUDA
-        action_tensor = torch.stack(
-            [torch.tensor(actions[agent], device=device, dtype=torch.float32) for agent in self.agents]
-        )  # shape: (num_agents, 2)
+        action_tensor = torch.stack([
+            torch.as_tensor(actions[agent], device=device, dtype=torch.float32)
+            for agent in self.agents
+        ])
+
+        self._make_step(action_tensor)
+        # Generate new observations and rewards
+        observations=self.get_all_obs_dict()
+        rewards_tensor=self._compute_rewards_tensor()
+        rewards={agent_id:rewards_tensor[idx] for idx, agent_id in enumerate(self.agents)}
+        done=self.done()
+        terminations={ agent_id: done for agent_id in self.agents}
+        truncations={ agent_id: False for agent_id in self.agents}
+        infos={ agent_id: {} for agent_id in self.agents}
+        return observations, rewards, terminations, truncations, infos
+
+
+    def step_tensor(self, actions_tensor):
+        self._make_step(actions_tensor)
+        state = self.state()
+        observations = self.get_all_obs_tensor()
+        rewards = self._compute_rewards_tensor()
+        dones = torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
+        return state, observations, rewards, dones
+
+    def _make_step(self, action_tensor):
         # Apply actions, update movement, handle collisions
         self._apply_actions(action_tensor)  # dV_lin and dV_ang
         self._update_positions()  # uses self.agent_vel_lin, self.agent_dir
         self._handle_collisions()  # modifies self.agent_pos if needed
-        # Generate new observations and rewards
-        observations = self._get_all_observations()  # dict of numpy arrays
-        rewards = self._compute_rewards()  # dict of floats (per-agent)
-        # Termination flags (fixed duration)
-        terminations = {agent: self.timestep >= self.max_steps for agent in self.agents}
-        truncations = {agent: False for agent in self.agents}
-        infos = {agent: {} for agent in self.agents}
+        self.timestep += 1
 
-        return observations, rewards, terminations, truncations, infos
+    def get_all_obs_dict(self):
+        return {
+            agent_id: self.get_observation(idx)
+            for idx, agent_id in enumerate(self.agents)
+        }
+
+
+
+    def get_all_obs_tensor(self):
+        return torch.stack([self.get_observation(idx) for idx in range(self._num_agents)], dim=0)
+
+    def done(self):
+        return self.timestep >= self.max_steps
+
+    def get_dones_tensor(self):
+        return torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
 
     def render(self):
         if self.fig is None or self.ax is None:
@@ -286,14 +302,7 @@ class DiffDriveParallelEnv(ParallelEnv):
                 + obstacle_size_min
         )
 
-    def _apply_actions(self, actions):
-        # Extract actions into a tensor in correct order
-        action_tensor = torch.tensor(
-            [actions[agent] for agent in self.agents],
-            dtype=torch.float32,
-            device=device
-        )  # Shape: (N, 2)
-
+    def _apply_actions(self, action_tensor):
         dv_lin = action_tensor[:, 0].clamp(-self.dv_lin_max, self.dv_lin_max)
         dv_ang = action_tensor[:, 1].clamp(-self.dv_ang_max, self.dv_ang_max)
 
@@ -361,98 +370,88 @@ class DiffDriveParallelEnv(ParallelEnv):
                         self.agent_pos[i] += direction * overlap
                     self.agent_vel_lin[i] = 0.0
 
-    def _get_all_observations(self):
-        observations = {}
-        N = len(self.agents)
-        M = self.num_obstacles
-        device = self.agent_pos.device
+    def get_observation(self, idx):
+        pos = self.agent_pos[idx]  # (2,)
+        angle_rad = self.agent_dir[idx]  # scalar
 
-        for idx, agent_id in enumerate(self.agents):
-            pos = self.agent_pos[idx]  # (2,)
-            angle_rad = self.agent_dir[idx]  # scalar
+        # Local rotation matrix
+        cos_a = torch.cos(angle_rad)
+        sin_a = torch.sin(angle_rad)
+        rot = torch.stack([
+            torch.stack([cos_a, sin_a]),
+            torch.stack([-sin_a, cos_a])
+        ])  # (2, 2)
 
-            # Local rotation matrix
-            cos_a = torch.cos(angle_rad)
-            sin_a = torch.sin(angle_rad)
-            rot = torch.stack([
-                torch.stack([cos_a, sin_a]),
-                torch.stack([-sin_a, cos_a])
-            ])  # (2, 2)
+        # === Own motion ===
+        own_lin = self.agent_vel_lin[idx].unsqueeze(0)  # (1,)
+        own_ang = self.agent_vel_ang[idx].unsqueeze(0)  # (1,)
 
-            # === Own motion ===
-            own_lin = self.agent_vel_lin[idx].unsqueeze(0)  # (1,)
-            own_ang = self.agent_vel_ang[idx].unsqueeze(0)  # (1,)
+        # === Other agents ===
+        mask = torch.arange(self._num_agents, device=device) != idx
+        other_pos = self.agent_pos[mask]
+        rel_vec = other_pos - pos
+        dists = torch.norm(rel_vec, dim=1)
+        order = torch.argsort(dists)
+        rel_pos = (rel_vec[order] @ rot.T)
+        other_dir = self.agent_dir[mask][order]
+        rel_dir = other_dir - angle_rad
+        rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
+        lin_vels = self.agent_vel_lin[mask][order]
+        ang_vels = self.agent_vel_ang[mask][order]
 
-            # === Other agents ===
-            mask = torch.arange(N, device=device) != idx
-            other_pos = self.agent_pos[mask]
-            rel_vec = other_pos - pos
-            dists = torch.norm(rel_vec, dim=1)
-            order = torch.argsort(dists)
-            rel_pos = (rel_vec[order] @ rot.T)
-            other_dir = self.agent_dir[mask][order]
-            rel_dir = other_dir - angle_rad
-            rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
-            lin_vels = self.agent_vel_lin[mask][order]
-            ang_vels = self.agent_vel_ang[mask][order]
+        # === Landmarks ===
+        rel_lm = self.landmarks - pos
+        lm_dists = torch.norm(rel_lm, dim=1)
+        lm_order = torch.argsort(lm_dists)
+        rel_lm_local = (rel_lm[lm_order] @ rot.T)
 
-            # === Landmarks ===
-            rel_lm = self.landmarks - pos
-            lm_dists = torch.norm(rel_lm, dim=1)
-            lm_order = torch.argsort(lm_dists)
-            rel_lm_local = (rel_lm[lm_order] @ rot.T)
+        # === Obstacles ===
+        obs_vec = self.obstacle_pos - pos
+        center_dists = torch.norm(obs_vec, dim=1)
+        edge_dists = center_dists - self.obstacle_radius
+        in_range = edge_dists < self.sens_range
+        obs_idx = torch.argsort(edge_dists)
+        obs_idx = obs_idx[in_range[obs_idx]]
 
-            # === Obstacles ===
-            obs_vec = self.obstacle_pos - pos
-            center_dists = torch.norm(obs_vec, dim=1)
-            edge_dists = center_dists - self.obstacle_radius
-            in_range = edge_dists < self.sens_range
-            obs_idx = torch.argsort(edge_dists)
-            obs_idx = obs_idx[in_range[obs_idx]]
+        edge_dists_in_range = edge_dists[obs_idx]
+        obs_vec_local = obs_vec[obs_idx] @ rot.T
+        obs_angles = torch.atan2(obs_vec_local[:, 1], obs_vec_local[:, 0])
 
-            edge_dists_in_range = edge_dists[obs_idx]
-            obs_vec_local = obs_vec[obs_idx] @ rot.T
-            obs_angles = torch.atan2(obs_vec_local[:, 1], obs_vec_local[:, 0])
-
-            # === Pad obstacle distances and angles ===
-            pad_len = M - len(obs_idx)
-            if pad_len > 0:
-                edge_dists_in_range = torch.cat([
-                    edge_dists_in_range,
-                    torch.zeros(pad_len, device=device)
-                ])
-                obs_angles = torch.cat([
-                    obs_angles,
-                    torch.zeros(pad_len, device=device)
-                ])
-
-            # === Final observation ===
-            obs = torch.cat([
-                own_lin,
-                own_ang,
-                rel_pos.flatten(),
-                rel_dir,
-                lin_vels,
-                ang_vels,
-                rel_lm_local.flatten(),
+        # === Pad obstacle distances and angles ===
+        pad_len = self.num_obstacles - len(obs_idx)
+        if pad_len > 0:
+            edge_dists_in_range = torch.cat([
                 edge_dists_in_range,
-                obs_angles
-            ], dim=0).to(torch.float32)
+                torch.zeros(pad_len, device=device)
+            ])
+            obs_angles = torch.cat([
+                obs_angles,
+                torch.zeros(pad_len, device=device)
+            ])
 
-            observations[agent_id] = obs
+        # === Final observation ===
+        return torch.cat([
+            own_lin,
+            own_ang,
+            rel_pos.flatten(),
+            rel_dir,
+            lin_vels,
+            ang_vels,
+            rel_lm_local.flatten(),
+            edge_dists_in_range,
+            obs_angles
+        ], dim=0).to(torch.float32)
 
-        return observations
-
-    def _compute_rewards(self):
+    def _compute_rewards_tensor(self):
         N = self._num_agents
         device = self.agent_pos.device
 
         # ----- Hungarian Assignment: agents <-> landmarks -----
-        agent_pos_np = self.agent_pos.cpu().numpy()
-        landmark_np = self.landmarks.cpu().numpy()
-        cost_matrix = np.linalg.norm(
-            agent_pos_np[:, None, :] - landmark_np[None, :, :], axis=2
-        )
+        # Done on CPU because scipy does not support GPU tensors
+        cost_matrix = torch.cdist(
+            self.agent_pos.detach().cpu(), self.landmarks.detach().cpu()
+        ).numpy()  # (N, N)
+
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         total_distance = cost_matrix[row_ind, col_ind].sum()
         base_reward = -total_distance / N
@@ -465,20 +464,24 @@ class DiffDriveParallelEnv(ParallelEnv):
         dist_matrix = torch.norm(delta, dim=2)  # (N, N)
         mask = (dist_matrix < self.safe_dist) & (~torch.eye(N, dtype=torch.bool, device=device))
         penalty_matrix = torch.exp(-dist_matrix) * mask  # (N, N)
-        penalties -= 10 * penalty_matrix.sum(dim=1)
+        penalties -= 10.0 * penalty_matrix.sum(dim=1)
 
-        # Agent–Obstacle penalty
-        for i in range(N):
-            dist = torch.norm(self.agent_pos[i] - self.obstacle_pos, dim=1) - self.obstacle_radius  # (M,)
-            close = dist < self.safe_dist
-            penalties[i] -= collision_penalty_scale * torch.sum(torch.exp(-dist[close]))
+        # Agent–Obstacle collision penalty (vectorized)
+        # Shape: agent_pos: (N, 2), obstacle_pos: (M, 2)
+        ap = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
+        ob = self.obstacle_pos.unsqueeze(0)  # (1, M, 2)
+        dist_ap_ob = torch.norm(ap - ob, dim=2)  # (N, M)
+        effective_dist = dist_ap_ob - self.obstacle_radius.unsqueeze(0)  # (N, M)
 
-        # ----- Combine Base + Penalty -----
-        rewards = {
-            self.agents[i]: (base_reward + penalties[i].item())
-            for i in range(N)
-        }
-        return rewards
+        close_mask = effective_dist < self.safe_dist  # (N, M)
+        penalties -= collision_penalty_scale * torch.sum(
+            torch.exp(-effective_dist) * close_mask, dim=1
+        )
+
+        # Final rewards: base_reward + individual penalties
+        rewards = base_reward + penalties  # shape: (N,)
+
+        return rewards  # 1D tensor of shape (N,)
 
     def get_list_from_dict_by_agent_id(self, d:dict):
         return torch.stack([
