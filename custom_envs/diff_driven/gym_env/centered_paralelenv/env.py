@@ -149,7 +149,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         for i in range(self._num_agents):
             pos = self.agent_pos[i].detach().cpu().numpy()
             angle_deg = self.agent_dir[i].item()
-            angle_rad = np.deg2rad(angle_deg)
+            angle_rad = angle_deg
 
             circle = plt.Circle(pos, self.agent_radius.item(), color='blue', alpha=0.6)
             self.ax.add_patch(circle)
@@ -196,7 +196,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         ag_order = torch.argsort(ag_dists)
 
         ag_rel_pos = (ag_vectors[ag_order] @ rot_matrix.T)  # (N, 2)
-        ag_dirs = torch.deg2rad(self.agent_dir[ag_order]).unsqueeze(1)  # (N, 1)
+        ag_dirs = self.agent_dir[ag_order].unsqueeze(1)  # (N, 1)
         ag_vlin = self.agent_vel_lin[ag_order].unsqueeze(1)  # (N, 1)
         ag_vang = self.agent_vel_ang[ag_order].unsqueeze(1)  # (N, 1)
 
@@ -232,7 +232,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         for _ in range(self._num_agents):
             while True:
                 pos = np.random.uniform(self.agent_radius.item(), self.env_size - self.agent_radius.item(), size=2)
-                angle = np.random.uniform(0, 360)
+                angle = np.random.uniform(-torch.pi, torch.pi, )
 
                 # Check collision with other agents
                 collision = False
@@ -303,7 +303,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def _update_positions(self):
         # Convert angles to radians
-        theta_rad = torch.deg2rad(self.agent_dir)
+        theta_rad = self.agent_dir
 
         # Compute deltas
         dx = self.agent_vel_lin * torch.cos(theta_rad)
@@ -369,7 +369,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         for idx, agent_id in enumerate(self.agents):
             pos = self.agent_pos[idx]  # (2,)
-            angle_rad = torch.deg2rad(self.agent_dir[idx])  # scalar
+            angle_rad = self.agent_dir[idx]  # scalar
 
             # Local rotation matrix
             cos_a = torch.cos(angle_rad)
@@ -390,7 +390,7 @@ class DiffDriveParallelEnv(ParallelEnv):
             dists = torch.norm(rel_vec, dim=1)
             order = torch.argsort(dists)
             rel_pos = (rel_vec[order] @ rot.T)
-            other_dir = torch.deg2rad(self.agent_dir[mask])[order]
+            other_dir = self.agent_dir[mask][order]
             rel_dir = other_dir - angle_rad
             rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
             lin_vels = self.agent_vel_lin[mask][order]

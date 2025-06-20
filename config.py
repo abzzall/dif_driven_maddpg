@@ -33,9 +33,9 @@ act_high = 1.0
 
 # ====== Motion parameters ======
 v_lin_max = 1.0          # Max linear velocity
-v_ang_max = 90.0         # Max angular velocity (degrees)
+v_ang_max = torch.pi/2        # Max angular velocity (degrees)
 dv_lin_max = 0.1 * v_lin_max  # Max delta linear velocity per step
-dv_ang_max = 15.0        # Max delta angular velocity per step
+dv_ang_max = torch.pi/12        # Max delta angular velocity per step
 
 # Sensor range (LIDAR)
 sens_range = 5 * v_lin_max  # How far agents can detect obstacles
