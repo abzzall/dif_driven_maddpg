@@ -69,7 +69,12 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Rendering
         self.fig = None
         self.ax = None
-    def _reset_episode(self):
+
+    def _reset_episode(self, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
         self.timestep = 0
         self.agents = self.possible_agents[:]
         # Reinitialize all entities
@@ -77,8 +82,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         self._init_landmarks()  # fills self.landmarks
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
 
-    def reset_tensor(self):
-        self._reset_episode()
+    def reset_tensor(self, seed=None):
+        self._reset_episode(seed)
         state = self.state()
         observations=self.get_all_obs_tensor()
         return state, observations
@@ -330,7 +335,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         )
 
         # Update angle
-        self.agent_dir = (self.agent_dir + self.agent_vel_ang) % 360
+        self.agent_dir = self.agent_dir + self.agent_vel_ang
 
     def _handle_collisions(self):
         # --- Agent-Agent Collisions ---
