@@ -69,6 +69,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Rendering
         self.fig = None
         self.ax = None
+        self.score=torch.zeros(self.num_agents, device=device)
 
     def _reset_episode(self, seed=None):
         if seed is not None:
@@ -81,6 +82,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         self._init_agents()  # fills self.agent_pos, self.agent_vel_lin, etc.
         self._init_landmarks()  # fills self.landmarks
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
+        self.score=torch.zeros(self.num_agents, device=device)
+
 
     def reset_tensor(self, seed=None):
         self._reset_episode(seed)
@@ -101,10 +104,9 @@ class DiffDriveParallelEnv(ParallelEnv):
             for agent in self.agents
         ])
 
-        self._make_step(action_tensor)
+        rewards_tensor=self._make_step(action_tensor)
         # Generate new observations and rewards
         observations=self.get_all_obs_dict()
-        rewards_tensor=self._compute_rewards_tensor()
         rewards={agent_id:rewards_tensor[idx] for idx, agent_id in enumerate(self.agents)}
         done=self.done()
         terminations={ agent_id: done for agent_id in self.agents}
@@ -114,10 +116,10 @@ class DiffDriveParallelEnv(ParallelEnv):
 
 
     def step_tensor(self, actions_tensor):
-        self._make_step(actions_tensor)
+        rewards=self._make_step(actions_tensor)
         state = self.state()
         observations = self.get_all_obs_tensor()
-        rewards = self._compute_rewards_tensor()
+
         dones = torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
         return state, observations, rewards, dones
 
@@ -127,6 +129,10 @@ class DiffDriveParallelEnv(ParallelEnv):
         self._update_positions()  # uses self.agent_vel_lin, self.agent_dir
         self._handle_collisions()  # modifies self.agent_pos if needed
         self.timestep += 1
+        rewards= self._compute_rewards_tensor()
+        self.score += rewards
+        return rewards
+
 
     def get_all_obs_dict(self):
         return {
@@ -488,14 +494,3 @@ class DiffDriveParallelEnv(ParallelEnv):
         rewards = base_reward + penalties  # shape: (N,)
 
         return rewards  # 1D tensor of shape (N,)
-
-    def get_list_from_dict_by_agent_id(self, d:dict):
-        return torch.stack([
-            torch.tensor(d[agent], dtype=torch.float32, device=self.device)
-            for agent in self.agents
-        ])
-    def get_dict_from_list_by_agent_id(self, l:list):
-        return {
-            f"agent_{i}": l[i]
-            for i in range(min(self.num_agents, len(l)))
-        }

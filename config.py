@@ -79,3 +79,4 @@ tau = 0.005                         # For soft update of target networks
 
 #n_games
 n_games = 50_000  # Total number of games to train the agents
+train_each=100
