@@ -24,7 +24,7 @@ class ReplayBuffer:
         self.act_buf[self.ptr] = actions
         self.reward_buf[self.ptr] = rewards
         self.next_obs_buf[self.ptr] = next_observations
-        self.done_buf[self.ptr] = dones
+        self.done_buf[self.ptr] = dones.float()
         self.state_buf[self.ptr] = state
         self.next_state_buf[self.ptr] = next_state
 

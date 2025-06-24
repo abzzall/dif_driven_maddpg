@@ -48,7 +48,7 @@ class MADDPGBase(ABC):
         pass
 
     @abstractmethod
-    def save_chck_point(self):
+    def save_checkpoint(self):
         pass
 
 
@@ -82,7 +82,7 @@ class MADDPGBase(ABC):
             avg_score= np.mean(score_history[-100:])
             if not evaluate and avg_score>best_score:
                 best_score=avg_score
-                self.save_chck_point()
+                self.save_checkpoint()
                 print('checkpoint saved')
             print('episode', i, 'score %.1f' % self.env.score.mean(), 'avg score %.1f' % avg_score)
 
@@ -139,9 +139,9 @@ class MADDPGSharedActorCritic(MADDPGBase):
         self.actor.load_checkpoint()
 
     def choose_actions(self, obs_list, use_noise=True):
-        self.actor.choose_action(obs_list, use_noise=use_noise, eval_mode=True)
+        return self.actor.choose_action(obs_list, use_noise=use_noise, eval_mode=True)
 
-    def save_chck_point(self):
+    def save_checkpoint(self):
         self.actor.save_checkpoint()
         self.critic.save_checkpoint()
         self.critic_target.save_checkpoint()

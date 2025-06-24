@@ -87,7 +87,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def reset_tensor(self, seed=None):
         self._reset_episode(seed)
-        state = self.state()
+        state = self.state_tensor()
         observations=self.get_all_obs_tensor()
         return state, observations
 
@@ -117,7 +117,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def step_tensor(self, actions_tensor):
         rewards=self._make_step(actions_tensor)
-        state = self.state()
+        state = self.state_tensor()
         observations = self.get_all_obs_tensor()
 
         dones = torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
@@ -194,7 +194,7 @@ class DiffDriveParallelEnv(ParallelEnv):
             self.fig = None
             self.ax = None
 
-    def state(self):
+    def state_tensor(self):
         # === Define reference frame ===
         lm_center = self.landmarks.mean(dim=0)  # (2,)
         lm_vectors = self.landmarks - lm_center  # (L, 2)
@@ -246,7 +246,11 @@ class DiffDriveParallelEnv(ParallelEnv):
             ob_state.flatten()  # 3M
         ])
 
-        return full_state.detach().cpu().numpy().astype(np.float32)
+        return full_state  #.detach().cpu().numpy().astype(np.float32)
+
+    def state(self):
+        return self.state_tensor().detach().cpu().numpy().astype(np.float32)
+
 
     def _init_agents(self):
         self.agent_pos = []
