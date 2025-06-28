@@ -4,6 +4,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 import matplotlib.pyplot as plt
 import torch
+from typing import Union, Optional, Tuple, Dict
 
 from config import (
     env_name, num_agents, obs_low, obs_high,
@@ -18,11 +19,36 @@ from config import (
 class DiffDriveParallelEnv(ParallelEnv):
     metadata = {"render_modes": [render_mode], "name": env_name}
 
-    def __init__(self):
+    def __init__(
+            self,
+            num_agents: int = num_agents,
+            obs_low: float = obs_low,
+            obs_high: float = obs_high,
+            act_low: float = act_low,
+            act_high: float = act_high,
+            env_size: float = env_size,
+            num_obstacles: int = num_obstacles,
+            v_lin_max: float = v_lin_max,
+            v_ang_max: float = v_ang_max,
+            dv_lin_max: float = dv_lin_max,
+            dv_ang_max: float = dv_ang_max,
+            agent_radius: float = agent_radius,
+            safe_dist: float = safe_dist,
+            sens_range: float = sens_range,
+            max_steps: int = max_steps,
+            obstacle_size_min: float = obstacle_size_min,
+            obstacle_size_max: float = obstacle_size_max,
+            collision_penalty_scale: float = collision_penalty_scale,
+            device: Union[str, torch.device] = device
+    ):
+
         super().__init__()
         self.device=device
+        self.obstacle_size_min=obstacle_size_min
+        self.obstacle_size_max=obstacle_size_max
+        self.collision_penalty_scale=collision_penalty_scale
         self._num_agents = num_agents
-        self.agents = [f"agent_{i}" for i in range(self._num_agents)]
+        self.agents:list[str] = [f"agent_{i}" for i in range(self._num_agents)]
         self.possible_agents = self.agents[:]
 
         # World settings (converted to CUDA tensors)
@@ -71,7 +97,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.ax = None
         self.score=torch.zeros(self.num_agents, device=device)
 
-    def _reset_episode(self, seed=None):
+    def _reset_episode(self, seed: Optional[int] = None) -> None:
         if seed is not None:
             np.random.seed(seed)
             torch.manual_seed(seed)
@@ -84,38 +110,47 @@ class DiffDriveParallelEnv(ParallelEnv):
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
         self.score=torch.zeros(self.num_agents, device=device)
 
-
-    def reset_tensor(self, seed=None):
+    def reset_tensor(self, seed: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         self._reset_episode(seed)
         state = self.state_tensor()
         observations=self.get_all_obs_tensor()
         return state, observations
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed: Optional[int] = None, options=None) -> Dict[str, np.ndarray]:
         self._reset_episode()
         # Get observations (in CUDA, then detach+cpu if gym requires)
         observations = self.get_all_obs_dict()
         return observations
 
-    def step(self, actions):
+    def step(self, actions: Dict[str, np.ndarray]) -> Tuple[
+        Dict[str, np.ndarray],  # observations
+        Dict[str, float],  # rewards
+        Dict[str, bool],  # terminations
+        Dict[str, bool],  # truncations
+        Dict[str, dict]  # infos
+    ]:
         # Convert actions (dict of np arrays) to a tensor on CUDA
         action_tensor = torch.stack([
-            torch.as_tensor(actions[agent], device=device, dtype=torch.float32)
+            torch.as_tensor(actions[agent], device=self.device, dtype=torch.float32)
             for agent in self.agents
         ])
 
         rewards_tensor=self._make_step(action_tensor)
         # Generate new observations and rewards
         observations=self.get_all_obs_dict()
-        rewards={agent_id:rewards_tensor[idx] for idx, agent_id in enumerate(self.agents)}
+        rewards={agent_id:rewards_tensor[idx].item() for idx, agent_id in enumerate(self.agents)}
         done=self.done()
         terminations={ agent_id: done for agent_id in self.agents}
         truncations={ agent_id: False for agent_id in self.agents}
         infos={ agent_id: {} for agent_id in self.agents}
         return observations, rewards, terminations, truncations, infos
 
-
-    def step_tensor(self, actions_tensor):
+    def step_tensor(self, actions_tensor: torch.Tensor) -> Tuple[
+        torch.Tensor,  # state: [state_dim]
+        torch.Tensor,  # observations: [N, obs_dim]
+        torch.Tensor,  # rewards: [N]
+        torch.Tensor  # dones: [N], dtype=bool
+    ]:
         rewards=self._make_step(actions_tensor)
         state = self.state_tensor()
         observations = self.get_all_obs_tensor()
@@ -123,7 +158,18 @@ class DiffDriveParallelEnv(ParallelEnv):
         dones = torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
         return state, observations, rewards, dones
 
-    def _make_step(self, action_tensor):
+    def _make_step(self, action_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Applies the action tensor to update the environment state.
+
+        Args:
+            action_tensor (torch.Tensor): Tensor of shape [num_agents, 2],
+                containing (dv_lin, dv_ang) for each agent on the same device.
+
+        Returns:
+            torch.Tensor: Per-agent reward vector of shape [num_agents],
+                on the same device as the input.
+        """
         # Apply actions, update movement, handle collisions
         self._apply_actions(action_tensor)  # dV_lin and dV_ang
         self._update_positions()  # uses self.agent_vel_lin, self.agent_dir
@@ -133,25 +179,32 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.score += rewards
         return rewards
 
-
-    def get_all_obs_dict(self):
+    def get_all_obs_dict(self) -> Dict[str, np.ndarray]:
+        """Returns per-agent observations as a dictionary (CPU numpy arrays)."""
         return {
-            agent_id: self.get_observation(idx)
+            agent_id: self.get_observation(idx).detach().cpu().numpy()
             for idx, agent_id in enumerate(self.agents)
         }
 
-
-
-    def get_all_obs_tensor(self):
+    def get_all_obs_tensor(self) -> torch.Tensor:
+        """Returns stacked per-agent observations as a CUDA tensor of shape [num_agents, obs_dim]."""
         return torch.stack([self.get_observation(idx) for idx in range(self._num_agents)], dim=0)
 
-    def done(self):
+    def done(self) -> bool:
+        """Returns whether episode has reached max steps."""
         return self.timestep >= self.max_steps
 
-    def get_dones_tensor(self):
+    def get_dones_tensor(self) -> torch.Tensor:
+        """Returns done mask as a tensor of shape [num_agents], dtype=torch.bool."""
         return torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
 
-    def render(self):
+    def render(self) -> None:
+        """
+        Renders the environment using matplotlib:
+        - Draws agents with direction arrows
+        - Obstacles as gray circles
+        - Landmarks as red crosses
+        """
         if self.fig is None or self.ax is None:
             self.fig, self.ax = plt.subplots(figsize=(6, 6))
         self.ax.clear()
@@ -194,8 +247,16 @@ class DiffDriveParallelEnv(ParallelEnv):
             self.fig = None
             self.ax = None
 
-    def state_tensor(self):
-        # === Define reference frame ===
+    def state_tensor(self) -> torch.Tensor:
+        """
+        Computes the full global state tensor of the environment.
+
+        Returns:
+            full_state (torch.Tensor): 1D tensor of shape [2L + 5N + 3M], where
+                L = number of landmarks,
+                N = number of agents,
+                M = number of obstacles.
+        """        # === Define reference frame ===
         lm_center = self.landmarks.mean(dim=0)  # (2,)
         lm_vectors = self.landmarks - lm_center  # (L, 2)
         lm_dists = torch.norm(lm_vectors, dim=1)
@@ -248,11 +309,20 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         return full_state  #.detach().cpu().numpy().astype(np.float32)
 
-    def state(self):
+    def state(self) -> np.ndarray:
+        """
+        Returns:
+            np.ndarray: Global state as float32 numpy array on CPU.
+        """
         return self.state_tensor().detach().cpu().numpy().astype(np.float32)
 
 
     def _init_agents(self):
+        """
+        Initializes agent positions, directions, and velocities while avoiding collisions
+        with other agents and obstacles. All values are stored as CUDA tensors.
+        """
+
         self.agent_pos = []
         self.agent_dir = []
         self.agent_vel_lin = []
@@ -280,10 +350,10 @@ class DiffDriveParallelEnv(ParallelEnv):
                     break
 
             placed_positions.append(pos)
-            self.agent_pos.append(torch.tensor(pos, dtype=torch.float32, device=device))
-            self.agent_dir.append(torch.tensor(angle, dtype=torch.float32, device=device))
-            self.agent_vel_lin.append(torch.tensor(0.0, dtype=torch.float32, device=device))
-            self.agent_vel_ang.append(torch.tensor(0.0, dtype=torch.float32, device=device))
+            self.agent_pos.append(torch.tensor(pos, dtype=torch.float32, device=self.device))
+            self.agent_dir.append(torch.tensor(angle, dtype=torch.float32, device=self.device))
+            self.agent_vel_lin.append(torch.tensor(0.0, dtype=torch.float32, device=self.device))
+            self.agent_vel_ang.append(torch.tensor(0.0, dtype=torch.float32, device=self.device))
 
         self.agent_pos = torch.stack(self.agent_pos)
         self.agent_dir = torch.stack(self.agent_dir)
@@ -291,11 +361,15 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.agent_vel_ang = torch.stack(self.agent_vel_ang)
 
     def _init_landmarks(self):
+        """
+        Randomly initializes landmark positions in the environment, ensuring
+        that all landmarks are placed with a minimum separation of 2 × agent_radius.
+        """
         self.landmarks = []
         attempts = 0
         max_attempts = 1000
         while len(self.landmarks) < self.num_landmarks and attempts < max_attempts:
-            candidate = torch.rand(2, device=device) * self.env_size
+            candidate = torch.rand(2, device=self.device) * self.env_size
             valid = True
             for existing in self.landmarks:
                 if torch.norm(candidate - existing) < 2 * self.agent_radius:
@@ -311,21 +385,34 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.landmarks = torch.stack(self.landmarks)
 
     def _init_obstacles(self):
-        self.obstacle_pos = torch.rand((self.num_obstacles, 2), device=device) * self.env_size
+        """
+        Initializes obstacle positions and radii uniformly within environment bounds.
+        """
+        self.obstacle_pos = torch.rand((self.num_obstacles, 2), device=self.device) * self.env_size
         self.obstacle_radius = (
-                torch.rand(self.num_obstacles, device=device) * (obstacle_size_max - obstacle_size_min)
-                + obstacle_size_min
+                torch.rand(self.num_obstacles, device=self.device) * (self.obstacle_size_max - self.obstacle_size_min)
+                + self.obstacle_size_min
         )
 
-    def _apply_actions(self, action_tensor):
-        dv_lin = action_tensor[:, 0].clamp(-self.dv_lin_max, self.dv_lin_max)
-        dv_ang = action_tensor[:, 1].clamp(-self.dv_ang_max, self.dv_ang_max)
+    def _apply_actions(self, action_tensor: torch.Tensor):
+        """
+        Applies delta actions to agent velocities (linear and angular),
+        with clamping based on environment constraints.
+        """
+        # Assumes action_tensor ∈ [-1, 1]
+        dv_lin = action_tensor[:, 0] * self.dv_lin_max
+        dv_ang = action_tensor[:, 1] * self.dv_ang_max
 
         # Update velocities with clamping
         self.agent_vel_lin = (self.agent_vel_lin + dv_lin).clamp(0, self.v_lin_max.item())
         self.agent_vel_ang = (self.agent_vel_ang + dv_ang).clamp(-self.v_ang_max, self.v_ang_max)
 
     def _update_positions(self):
+        """
+        Updates agent positions and orientations based on current velocities.
+        Ensures positions are clamped within environment boundaries.
+        """
+
         # Convert angles to radians
         theta_rad = self.agent_dir
 
@@ -349,6 +436,14 @@ class DiffDriveParallelEnv(ParallelEnv):
 
 
     def _handle_collisions(self):
+        """
+        Detects and resolves collisions:
+        - Between agents (mutual repulsion)
+        - Between agents and obstacles (agent repelled from obstacle)
+
+        Sets linear velocity to zero on collision to simulate impact.
+        """
+
         # --- Agent-Agent Collisions ---
         pos_i = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
         pos_j = self.agent_pos.unsqueeze(0)  # (1, N, 2)
@@ -386,7 +481,23 @@ class DiffDriveParallelEnv(ParallelEnv):
                         self.agent_pos[i] += direction * overlap
                     self.agent_vel_lin[i] = 0.0
 
-    def get_observation(self, idx):
+    def get_observation(self, idx: int) -> torch.Tensor:
+        """
+        Computes the local observation vector for a specific agent index.
+
+        Includes:
+            - Own linear and angular velocity
+            - Relative positions and orientations of other agents
+            - Landmark positions (sorted by distance, rotated into local frame)
+            - Obstacle edge distances and angles (limited by sensing range, padded)
+
+        Args:
+            idx (int): Index of the agent.
+
+        Returns:
+            torch.Tensor: Observation vector of shape [obs_dim]
+        """
+
         pos = self.agent_pos[idx]  # (2,)
         angle_rad = self.agent_dir[idx]  # scalar
 
@@ -403,7 +514,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         own_ang = self.agent_vel_ang[idx].unsqueeze(0)  # (1,)
 
         # === Other agents ===
-        mask = torch.arange(self._num_agents, device=device) != idx
+        mask = torch.arange(self._num_agents, device=self.device) != idx
         other_pos = self.agent_pos[mask]
         rel_vec = other_pos - pos
         dists = torch.norm(rel_vec, dim=1)
@@ -438,11 +549,11 @@ class DiffDriveParallelEnv(ParallelEnv):
         if pad_len > 0:
             edge_dists_in_range = torch.cat([
                 edge_dists_in_range,
-                torch.zeros(pad_len, device=device)
+                torch.zeros(pad_len, device=self.device)
             ])
             obs_angles = torch.cat([
                 obs_angles,
-                torch.zeros(pad_len, device=device)
+                torch.zeros(pad_len, device=self.device)
             ])
 
         # === Final observation ===
@@ -458,7 +569,17 @@ class DiffDriveParallelEnv(ParallelEnv):
             obs_angles
         ], dim=0).to(torch.float32)
 
-    def _compute_rewards_tensor(self):
+    def _compute_rewards_tensor(self) -> torch.Tensor:
+        """
+        Computes rewards for all agents based on:
+          - Hungarian assignment to nearest landmarks (minimizing global distance)
+          - Penalties for close proximity to other agents
+          - Penalties for collisions or closeness to obstacles
+
+        Returns:
+            torch.Tensor: A 1D tensor of shape (num_agents,) representing individual rewards.
+        """
+
         N = self._num_agents
         device = self.agent_pos.device
 
@@ -490,7 +611,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         effective_dist = dist_ap_ob - self.obstacle_radius.unsqueeze(0)  # (N, M)
 
         close_mask = effective_dist < self.safe_dist  # (N, M)
-        penalties -= collision_penalty_scale * torch.sum(
+        penalties -= self.collision_penalty_scale * torch.sum(
             torch.exp(-effective_dist) * close_mask, dim=1
         )
 

@@ -1,11 +1,39 @@
 import torch
+from typing import Union, Tuple
 from config import (
     num_agents, replay_buffer_size, device, batch_size
 )
 
 class ReplayBuffer:
-    def __init__(self, obs_dim, action_dim, state_dim, num_agents=num_agents, replay_buffer_size=replay_buffer_size,
-                 device=device):
+    def __init__(
+            self,
+            obs_dim: int,  # Dimension of each agent's observation
+            action_dim: int,  # Dimension of each agent's action
+            state_dim: int,  # Dimension of global state
+            num_agents: int = num_agents,  # Total number of agents
+            replay_buffer_size: int = replay_buffer_size,  # Max buffer capacity
+            device: Union[str, torch.device] = device  # Device where tensors are stored
+    ):
+        """
+        Initializes a replay buffer for multi-agent off-policy RL.
+
+        Args:
+            obs_dim (int): Dimensionality of each agent's local observation.
+            action_dim (int): Dimensionality of each agent's action.
+            state_dim (int): Dimensionality of the global state.
+            num_agents (int): Number of agents in the environment.
+            replay_buffer_size (int): Maximum number of transitions to store.
+            device (str or torch.device): Device for storing sampled batches (e.g., 'cuda', 'cpu').
+
+        Buffers (shapes):
+            - obs_buf:         [max_size, num_agents, obs_dim]
+            - act_buf:         [max_size, num_agents, action_dim]
+            - reward_buf:      [max_size, num_agents]
+            - next_obs_buf:    [max_size, num_agents, obs_dim]
+            - done_buf:        [max_size, num_agents]
+            - state_buf:       [max_size, state_dim]
+            - next_state_buf:  [max_size, state_dim]
+        """
         self.obs_buf = torch.zeros((replay_buffer_size, num_agents, obs_dim), dtype=torch.float32)
         self.act_buf = torch.zeros((replay_buffer_size, num_agents, action_dim), dtype=torch.float32)
         self.reward_buf = torch.zeros((replay_buffer_size, num_agents), dtype=torch.float32)
@@ -19,7 +47,16 @@ class ReplayBuffer:
         self.max_size = replay_buffer_size
         self.device = torch.device(device)
 
-    def add(self, state, observations, actions, rewards, next_state, next_observations, dones):
+    def add(
+            self,
+            state: torch.Tensor,  # shape: [state_dim]
+            observations: torch.Tensor,  # shape: [num_agents, obs_dim]
+            actions: torch.Tensor,  # shape: [num_agents, action_dim]
+            rewards: torch.Tensor,  # shape: [num_agents]
+            next_state: torch.Tensor,  # shape: [state_dim]
+            next_observations: torch.Tensor,  # shape: [num_agents, obs_dim]
+            dones: torch.Tensor  # shape: [num_agents], dtype: bool or float
+    ) -> None:
         self.obs_buf[self.ptr] = observations
         self.act_buf[self.ptr] = actions
         self.reward_buf[self.ptr] = rewards
@@ -31,7 +68,15 @@ class ReplayBuffer:
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
-    def sample(self, batch_size=batch_size):
+    def sample(self, batch_size: int = batch_size) -> Tuple[
+        torch.Tensor,  # obs_buf: [B, N, obs_dim]
+        torch.Tensor,  # next_obs_buf: [B, N, obs_dim]
+        torch.Tensor,  # state_buf: [B, state_dim]
+        torch.Tensor,  # next_state_buf: [B, state_dim]
+        torch.Tensor,  # act_buf: [B, N, action_dim]
+        torch.Tensor,  # reward_buf: [B, N]
+        torch.Tensor  # done_buf: [B, N]
+    ]:
         idx = torch.randint(0, self.size, (batch_size,))
         return (
             self.obs_buf[idx].to(self.device),               # observation

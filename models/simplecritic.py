@@ -2,12 +2,24 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
+from config import *
+from typing import Optional, Type
 
 
 
 class SharedCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, n_agents, hidden_dim=None,
-                 activation=nn.ReLU, device='cpu', lr=1e-3, chckpnt_file='shared_critic.pth'):
+    def __init__(
+            self,
+            state_dim: int,
+            action_dim: int,
+            n_agents: int,
+            hidden_dim: Optional[int] = None,
+            activation: Type[nn.Module] = nn.ReLU,
+            device: str = device,
+            lr: float = critic_lr,
+            chckpnt_file: str = critic_ckpt
+    ):
+
         super().__init__()
         self.device = torch.device(device)
         input_dim = state_dim + n_agents * action_dim
@@ -37,19 +49,40 @@ class SharedCritic(nn.Module):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
                 nn.init.zeros_(m.bias)
 
-    def forward(self, state, joint_action):
-        # Inputs:
-        #   state:        [B, state_dim]
-        #   joint_action: [B, N * act_dim]  (concatenated actions)
-        state = state.to(self.device)
-        joint_action = joint_action.to(self.device)
+    def forward(
+            self,
+            state: torch.Tensor,  # shape: [B, state_dim], device: any
+            joint_action: torch.Tensor  # shape: [B, N * act_dim], device: any
+    ) -> torch.Tensor:
+        """
+        Forward pass of the shared critic.
 
+        Args:
+            state (torch.Tensor): Global state tensor of shape [B, state_dim].
+            joint_action (torch.Tensor): Joint actions of all agents, concatenated, shape [B, N * act_dim].
+
+        Returns:
+            torch.Tensor: Q-values for each agent, shape [B, N], on self.device.
+        """
+
+        # Ensure tensors are on the correct device
+        state = state.to(self.device)  # [B, state_dim], device: self.device
+        joint_action = joint_action.to(self.device)  # [B, N * act_dim], device: self.device
+
+        # Concatenate state and joint actions
         x = torch.cat([state, joint_action], dim=-1)  # [B, state_dim + N * act_dim]
-        q_values = self.q_net(x)                      # [B, N]
-        return q_values
-    def save_checkpoint(self, filepath=None):
+
+        # Pass through the Q-network
+        q_values = self.q_net(x)  # [B, N]
+
+        return q_values  # shape: [B, N], device: self.device
+
+    def save_checkpoint(self, filepath: str | None = None) -> None:
         """
         Saves model and optimizer state to a checkpoint file.
+
+        Args:
+            filepath (str | None): Optional custom file path. If None, uses default self.chckpnt_file.
         """
         if filepath is None:
             filepath = self.chckpnt_file
@@ -60,9 +93,12 @@ class SharedCritic(nn.Module):
         torch.save(checkpoint, filepath)
         print(f"Checkpoint saved to {filepath}")
 
-    def load_checkpoint(self, filepath):
+    def load_checkpoint(self, filepath: str) -> None:
         """
         Loads model and optimizer state from a checkpoint file.
+
+        Args:
+            filepath (str): Path to the saved checkpoint.
         """
         if not os.path.isfile(filepath):
             raise FileNotFoundError(f"Checkpoint file '{filepath}' not found.")

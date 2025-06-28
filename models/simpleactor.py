@@ -2,24 +2,30 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
+from typing import Optional
+from config import *
+from typing import Union
+import numpy as np
 
 
 class SimpleActor(nn.Module):
     """
     Shared actor for interchangeable agents. Outputs deterministic or noisy actions.
     """
+
     def __init__(
-        self,
-        observation_dim,
-        action_dim,
-        hidden_dim=None,
-        max_action=1.0,
-        std_scale=0.3,
-        use_noise=True,
-        lr=1e-3,
-        device='cpu',
-        chckpnt_file='simple_actor.pth'
+            self,
+            observation_dim: int,
+            action_dim: int,
+            hidden_dim: Optional[int] = None,
+            max_action: float = 1,  # ← from config.py
+            std_scale: float = std_scale,  # ← from config.py
+            use_noise: bool = use_noise,  # ← from config.py
+            lr: float = actor_lr,  # ← from config.py
+            device: str = device,  # ← from config.py
+            chckpnt_file: str = 'simple_actor.pth'
     ):
+
         super().__init__()
         self.device = torch.device(device)
         self.observation_dim = observation_dim
@@ -54,7 +60,7 @@ class SimpleActor(nn.Module):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
                 nn.init.zeros_(m.bias)
 
-    def forward(self, obs, mean=False):
+    def forward(self, obs: torch.Tensor, mean: bool = False) -> torch.Tensor:
         """
         Forward pass of the actor.
 
@@ -87,10 +93,13 @@ class SimpleActor(nn.Module):
         torch.save(checkpoint, filepath)
         print(f"Checkpoint saved to {filepath}")
 
-    def load_checkpoint(self, filepath):
+    def load_checkpoint(self, filepath=None):
         """
         Loads model and optimizer state from a checkpoint file.
         """
+        if filepath is None:
+            filepath = self.chckpnt_file
+
         if not os.path.isfile(filepath):
             raise FileNotFoundError(f"Checkpoint file '{filepath}' not found.")
 
@@ -100,7 +109,7 @@ class SimpleActor(nn.Module):
         self.to(self.device)
         print(f"Checkpoint loaded from {filepath}")
 
-    def choose_action(self, observation, use_noise=True, eval_mode=True):
+    def choose_action(self, observation, use_noise=True, eval_mode=True) -> torch.Tensor:
         """
         Selects action(s) for either a single agent or multiple agents.
 
@@ -146,6 +155,4 @@ class SimpleActor(nn.Module):
 
         if eval_mode and prev_mode:
             self.train()
-
-        action_np = action.cpu().numpy()
-        return action_np[0] if is_single else action_np
+        return action[0] if is_single else action

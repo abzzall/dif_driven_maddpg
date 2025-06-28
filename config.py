@@ -80,3 +80,7 @@ tau = 0.005                         # For soft update of target networks
 #n_games
 n_games = 50_000  # Total number of games to train the agents
 train_each=100
+
+critic_lr: float = 1e-3
+critic_ckpt: str = 'shared_critic.pth'
+actor_lr = 1e-3
