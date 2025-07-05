@@ -84,3 +84,6 @@ train_each=100
 critic_lr: float = 1e-3
 critic_ckpt: str = 'shared_critic.pth'
 actor_lr = 1e-3
+
+normalise=True # normalise the observations and state
+
