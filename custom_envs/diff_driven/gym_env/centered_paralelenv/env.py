@@ -369,7 +369,8 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         for _ in range(self._num_agents):
             while True:
-                pos = np.random.uniform(self.agent_radius.item(), self.env_size - self.agent_radius.item(), size=2)
+                half = self.env_size.item() / 2 - self.agent_radius.item()
+                pos = np.random.uniform(-half, half, size=2)
                 angle = np.random.uniform(-torch.pi, torch.pi, )
 
                 # Check collision with other agents
@@ -412,7 +413,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         min_dist = 2 * self.agent_radius.item()
 
         while len(landmarks) < self.num_landmarks and attempts < max_attempts:
-            candidate = torch.rand(2, device=self.device) * self.env_size
+            candidate = (torch.rand(2, device=self.device) - 0.5) * self.env_size
             valid = True
             for existing in landmarks:
                 if torch.norm(candidate - existing) < min_dist:
@@ -450,7 +451,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         """
         Initializes obstacle positions and radii uniformly within environment bounds.
         """
-        self.obstacle_pos = torch.rand((self.num_obstacles, 2), device=self.device) * self.env_size
+        self.obstacle_pos = (torch.rand((self.num_obstacles, 2), device=self.device) - 0.5) * self.env_size
         self.obstacle_radius = (
                 torch.rand(self.num_obstacles, device=self.device) * (self.obstacle_size_max - self.obstacle_size_min)
                 + self.obstacle_size_min
@@ -487,10 +488,11 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.agent_pos = self.agent_pos + delta
 
         # Clamp to bounds
+        half = self.env_size / 2
         self.agent_pos = torch.clamp(
             self.agent_pos,
-            min=self.agent_radius,
-            max=self.env_size - self.agent_radius,
+            min=-half + self.agent_radius,
+            max=half - self.agent_radius,
         )
 
         # Update angle
