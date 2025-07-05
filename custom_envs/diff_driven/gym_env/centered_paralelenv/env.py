@@ -103,12 +103,13 @@ class DiffDriveParallelEnv(ParallelEnv):
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
         self.timestep = 0
+        self._init_landmarks()  # fills self.landmarks
         self.agents = self.possible_agents[:]
         # Reinitialize all entities
         self._init_agents()  # fills self.agent_pos, self.agent_vel_lin, etc.
-        self._init_landmarks()  # fills self.landmarks
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
         self.score=torch.zeros(self.num_agents, device=device)
+        self._init_static_state_part()
 
     def reset_tensor(self, seed: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         self._reset_episode(seed)
@@ -247,67 +248,60 @@ class DiffDriveParallelEnv(ParallelEnv):
             self.fig = None
             self.ax = None
 
+    def _init_static_state_part(self):
+        """
+        Computes and stores the static part of the global state tensor,
+        which includes:
+            - Landmark positions: shape [num_landmarks, 2]
+            - Obstacle positions and radii: shape [num_obstacles, 3]
+
+        Stores:
+            self.static_state_tensor: 1D tensor of shape [2L + 3M], on self.device
+        """
+        # Sort landmarks by distance to origin (optional, but consistent)
+        lm_dists = torch.norm(self.landmarks, dim=1)
+        lm_order = torch.argsort(lm_dists)
+        lm_sorted = self.landmarks[lm_order].flatten()  # shape: [2L]
+
+        # Sort obstacles by distance to origin (for consistency)
+        ob_dists = torch.norm(self.obstacle_pos, dim=1)
+        ob_order = torch.argsort(ob_dists)
+        ob_pos_sorted = self.obstacle_pos[ob_order]
+        ob_radii_sorted = self.obstacle_radius[ob_order].unsqueeze(1)
+        ob_state = torch.cat([ob_pos_sorted, ob_radii_sorted], dim=1).flatten()  # shape: [3M]
+
+        # Final static state
+        self.static_state_tensor = torch.cat([lm_sorted, ob_state], dim=0)  # shape: [2L + 3M]
+
     def state_tensor(self) -> torch.Tensor:
         """
-        Computes the full global state tensor of the environment.
+        Returns the full global state tensor for the current timestep.
+
+        Structure:
+            [landmarks (2L) | obstacles (3M) | agents (5N)]
+
+        Where for each agent:
+            - position: (x, y)
+            - direction: θ
+            - linear velocity
+            - angular velocity
 
         Returns:
-            full_state (torch.Tensor): 1D tensor of shape [2L + 5N + 3M], where
-                L = number of landmarks,
-                N = number of agents,
-                M = number of obstacles.
-        """        # === Define reference frame ===
-        lm_center = self.landmarks.mean(dim=0)  # (2,)
-        lm_vectors = self.landmarks - lm_center  # (L, 2)
-        lm_dists = torch.norm(lm_vectors, dim=1)
-
-        # Weighted circular mean angle
-        angles = torch.atan2(lm_vectors[:, 1], lm_vectors[:, 0])
-        sin_sum = torch.sum(torch.sin(angles) * lm_dists)
-        cos_sum = torch.sum(torch.cos(angles) * lm_dists)
-        mean_angle = torch.atan2(sin_sum, cos_sum)
-
-        # Rotation matrix to align with weighted direction
-        cos_a, sin_a = torch.cos(mean_angle), torch.sin(mean_angle)
-        rot_matrix = torch.stack([
-            torch.stack([cos_a, sin_a]),
-            torch.stack([-sin_a, cos_a])
-        ])  # (2, 2)
-
-        # === Landmarks (sorted by distance) ===
-        lm_order = torch.argsort(lm_dists)
-        lm_rel_pos = (lm_vectors[lm_order] @ rot_matrix.T)  # (L, 2)
-
-        # === Agents (sorted by distance) ===
-        ag_vectors = self.agent_pos - lm_center  # (N, 2)
-        ag_dists = torch.norm(ag_vectors, dim=1)
+            torch.Tensor: 1D tensor of shape [2L + 3M + 5N], on self.device
+        """
+        # Sort agents by distance to origin (for consistency)
+        ag_dists = torch.norm(self.agent_pos, dim=1)
         ag_order = torch.argsort(ag_dists)
 
-        ag_rel_pos = (ag_vectors[ag_order] @ rot_matrix.T)  # (N, 2)
-        ag_dirs = self.agent_dir[ag_order].unsqueeze(1)  # (N, 1)
+        ag_pos = self.agent_pos[ag_order]  # (N, 2)
+        ag_dir = self.agent_dir[ag_order].unsqueeze(1)  # (N, 1)
         ag_vlin = self.agent_vel_lin[ag_order].unsqueeze(1)  # (N, 1)
         ag_vang = self.agent_vel_ang[ag_order].unsqueeze(1)  # (N, 1)
 
-        ag_state = torch.cat([ag_rel_pos, ag_dirs, ag_vlin, ag_vang], dim=1)  # (N, 5)
+        ag_state = torch.cat([ag_pos, ag_dir, ag_vlin, ag_vang], dim=1).flatten()  # (5N,)
 
-        # === Obstacles (sorted by distance) ===
-        ob_vectors = self.obstacle_pos - lm_center  # (M, 2)
-        ob_dists = torch.norm(ob_vectors, dim=1)
-        ob_order = torch.argsort(ob_dists)
-
-        ob_rel_pos = (ob_vectors[ob_order] @ rot_matrix.T)  # (M, 2)
-        ob_radii = self.obstacle_radius[ob_order].unsqueeze(1)  # (M, 1)
-
-        ob_state = torch.cat([ob_rel_pos, ob_radii], dim=1)  # (M, 3)
-
-        # === Final state ===
-        full_state = torch.cat([
-            lm_rel_pos.flatten(),  # 2L
-            ag_state.flatten(),  # 5N
-            ob_state.flatten()  # 3M
-        ])
-
-        return full_state  #.detach().cpu().numpy().astype(np.float32)
+        # Combine with static part
+        return torch.cat([self.static_state_tensor, ag_state], dim=0)
 
     def state(self) -> np.ndarray:
         """
@@ -362,27 +356,52 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def _init_landmarks(self):
         """
-        Randomly initializes landmark positions in the environment, ensuring
-        that all landmarks are placed with a minimum separation of 2 × agent_radius.
+        Initializes landmark positions with minimum separation and transforms them
+        into a new coordinate system centered at the landmarks' centroid and aligned
+        with the principal axis of their spatial distribution.
+
+        After this, all coordinates are assumed to be in the new system,
+        and the original world frame is discarded.
         """
-        self.landmarks = []
+        landmarks = []
         attempts = 0
         max_attempts = 1000
-        while len(self.landmarks) < self.num_landmarks and attempts < max_attempts:
+        min_dist = 2 * self.agent_radius.item()
+
+        while len(landmarks) < self.num_landmarks and attempts < max_attempts:
             candidate = torch.rand(2, device=self.device) * self.env_size
             valid = True
-            for existing in self.landmarks:
-                if torch.norm(candidate - existing) < 2 * self.agent_radius:
+            for existing in landmarks:
+                if torch.norm(candidate - existing) < min_dist:
                     valid = False
                     break
             if valid:
-                self.landmarks.append(candidate)
+                landmarks.append(candidate)
             attempts += 1
 
-        if len(self.landmarks) < self.num_landmarks:
+        if len(landmarks) < self.num_landmarks:
             raise RuntimeError("Failed to place all landmarks with minimum separation.")
 
-        self.landmarks = torch.stack(self.landmarks)
+        # Stack into a tensor (L, 2) — original frame
+        landmarks_tensor = torch.stack(landmarks, dim=0)
+
+        # Define new coordinate system:
+        # Step 1: origin = centroid
+        origin = landmarks_tensor.mean(dim=0)
+
+        # Step 2: PCA for principal direction
+        centered = landmarks_tensor - origin
+        cov = centered.T @ centered
+        eigvals, eigvecs = torch.linalg.eigh(cov)
+        x_axis = eigvecs[:, -1] / torch.norm(eigvecs[:, -1])
+        y_axis = torch.stack([-x_axis[1], x_axis[0]])
+        rot_matrix = torch.stack([x_axis, y_axis])  # (2, 2)
+
+        # Step 3: Transform landmarks into new global coordinate frame
+        landmarks_aligned = centered @ rot_matrix.T  # (L, 2)
+
+        # Save landmarks in new frame
+        self.landmarks = landmarks_aligned
 
     def _init_obstacles(self):
         """
@@ -483,59 +502,64 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def get_observation(self, idx: int) -> torch.Tensor:
         """
-        Computes the local observation vector for a specific agent index.
+        Computes the local observation vector for a specific agent.
 
-        Includes:
+        Coordinate system:
+            - Origin: agent's position
+            - x-axis: aligned with agent's heading
+            - Rotated positions and angles are transformed into this frame
+
+        Observation includes:
             - Own linear and angular velocity
-            - Relative positions and orientations of other agents
-            - Landmark positions (sorted by distance, rotated into local frame)
-            - Obstacle edge distances and angles (limited by sensing range, padded)
-
-        Args:
-            idx (int): Index of the agent.
+            - Other agents: positions (ego frame), heading difference, velocities
+            - Landmarks: positions (ego frame)
+            - Obstacles: edge distances (scalar), angles (ego frame)
 
         Returns:
             torch.Tensor: Observation vector of shape [obs_dim]
         """
-
         pos = self.agent_pos[idx]  # (2,)
-        angle_rad = self.agent_dir[idx]  # scalar
+        heading = self.agent_dir[idx]  # scalar
 
-        # Local rotation matrix
-        cos_a = torch.cos(angle_rad)
-        sin_a = torch.sin(angle_rad)
+        # === Rotation matrix: world → ego frame ===
+        cos_a = torch.cos(heading)
+        sin_a = torch.sin(heading)
         rot = torch.stack([
             torch.stack([cos_a, sin_a]),
             torch.stack([-sin_a, cos_a])
-        ])  # (2, 2)
+        ])  # shape: (2, 2)
 
-        # === Own motion ===
+        # === 1. Own motion (coordinate-invariant) ===
         own_lin = self.agent_vel_lin[idx].unsqueeze(0)  # (1,)
         own_ang = self.agent_vel_ang[idx].unsqueeze(0)  # (1,)
 
-        # === Other agents ===
+        # === 2. Other agents ===
         mask = torch.arange(self._num_agents, device=self.device) != idx
-        other_pos = self.agent_pos[mask]
-        rel_vec = other_pos - pos
+        other_pos = self.agent_pos[mask]  # (N-1, 2)
+        rel_vec = other_pos - pos  # (N-1, 2)
         dists = torch.norm(rel_vec, dim=1)
         order = torch.argsort(dists)
-        rel_pos = (rel_vec[order] @ rot.T)
-        other_dir = self.agent_dir[mask][order]
-        rel_dir = other_dir - angle_rad
-        rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
-        lin_vels = self.agent_vel_lin[mask][order]
-        ang_vels = self.agent_vel_ang[mask][order]
 
-        # === Landmarks ===
-        rel_lm = self.landmarks - pos
+        rel_pos = (rel_vec[order] @ rot.T)  # rotated into ego frame — (N-1, 2)
+        other_dir = self.agent_dir[mask][order]  # (N-1,)
+        rel_dir = torch.atan2(
+            torch.sin(other_dir - heading),
+            torch.cos(other_dir - heading)
+        ).unsqueeze(1)  # (N-1, 1)
+
+        lin_vels = self.agent_vel_lin[mask][order].unsqueeze(1)  # (N-1, 1)
+        ang_vels = self.agent_vel_ang[mask][order].unsqueeze(1)  # (N-1, 1)
+
+        # === 3. Landmarks ===
+        rel_lm = self.landmarks - pos  # (L, 2)
         lm_dists = torch.norm(rel_lm, dim=1)
         lm_order = torch.argsort(lm_dists)
-        rel_lm_local = (rel_lm[lm_order] @ rot.T)
+        rel_lm_local = (rel_lm[lm_order] @ rot.T)  # (L, 2)
 
-        # === Obstacles ===
-        obs_vec = self.obstacle_pos - pos
+        # === 4. Obstacles ===
+        obs_vec = self.obstacle_pos - pos  # (M, 2)
         center_dists = torch.norm(obs_vec, dim=1)
-        edge_dists = center_dists - self.obstacle_radius
+        edge_dists = center_dists - self.obstacle_radius  # (M,)
         in_range = edge_dists < self.sens_range
         obs_idx = torch.argsort(edge_dists)
         obs_idx = obs_idx[in_range[obs_idx]]
@@ -544,7 +568,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         obs_vec_local = obs_vec[obs_idx] @ rot.T
         obs_angles = torch.atan2(obs_vec_local[:, 1], obs_vec_local[:, 0])
 
-        # === Pad obstacle distances and angles ===
+        # Pad obstacles to fixed number
         pad_len = self.num_obstacles - len(obs_idx)
         if pad_len > 0:
             edge_dists_in_range = torch.cat([
@@ -556,17 +580,17 @@ class DiffDriveParallelEnv(ParallelEnv):
                 torch.zeros(pad_len, device=self.device)
             ])
 
-        # === Final observation ===
+        # === Final observation vector ===
         return torch.cat([
-            own_lin,
-            own_ang,
-            rel_pos.flatten(),
-            rel_dir,
-            lin_vels,
-            ang_vels,
-            rel_lm_local.flatten(),
-            edge_dists_in_range,
-            obs_angles
+            own_lin,  # (1,)
+            own_ang,  # (1,)
+            rel_pos.flatten(),  # (N-1)×2
+            rel_dir.flatten(),  # (N-1)
+            lin_vels.flatten(),  # (N-1)
+            ang_vels.flatten(),  # (N-1)
+            rel_lm_local.flatten(),  # L×2
+            edge_dists_in_range,  # M
+            obs_angles  # M
         ], dim=0).to(torch.float32)
 
     def _compute_rewards_tensor(self) -> torch.Tensor:
