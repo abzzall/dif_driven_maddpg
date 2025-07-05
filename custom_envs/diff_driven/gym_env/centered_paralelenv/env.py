@@ -67,8 +67,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.timestep = 0
 
 
-        self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*5
         self.action_dim=2
+        self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*5+self.action_dim
         self.state_dim=5*self.num_agents+2*self.num_landmarks+3*self.num_obstacles
 
         # Observation and action spaces (remain on CPU)
