@@ -8,11 +8,12 @@ import torch
 env_name = "diff_drive_multiagent"
 render_mode = "human"  # or "none"
 
+# ====== Environment settings ======
 # Number of agents (should match number of landmarks)
-num_agents = 9
+num_agents = 6
 
 # Number of obstacles (moderate complexity)
-num_obstacles = 9  # 1 obstacle per agent for balanced navigation
+num_obstacles = 4  # 1 obstacle per agent for balanced navigation
 
 # Environment size (2D continuous space)
 env_size = 10.0  # Map is 10x10 meters
@@ -44,8 +45,9 @@ sens_range = 5 * v_lin_max  # How far agents can detect obstacles
 collision_penalty_scale = 10.0  # Multiplied by exp(-d) if d < safe_dist
 
 # ====== Replay Buffer and Training ======
-replay_buffer_size = 1_000_000  # Large enough to avoid overfitting, safe for 6GB GPU (store on CPU)
-batch_size = 1024               # Optimized for 6GB GPU, adjust if needed
+replay_buffer_size = 100_000  # Large enough to avoid overfitting, safe for 6GB GPU (store on CPU)
+batch_size = 256               # Optimized for 6GB GPU, adjust if needed
+start_training_after = 5_000   # Sooner training for small buffer
 
 # ====== Network architecture ======
 hidden_dim_actor = 256      # Sufficient for obs_dim=78, 2-layer ReLU net
@@ -70,15 +72,12 @@ obstacle_size_min=0.3
 obstacle_size_max=3
 
 # === Training and Replay ===
-buffer_size = 200_000               # Total number of joint transitions stored
-batch_size = 1024                   # Mini-batch size for training
-start_training_after = 10_000       # Steps to fill buffer before training
 gamma = 0.99                        # Discount factor
 tau = 0.005                         # For soft update of target networks
 
 
 #n_games
-n_games = 50_000  # Total number of games to train the agents
+n_games = 25_000  # Total number of games to train the agents
 train_each=100
 
 critic_lr: float = 1e-3
@@ -86,4 +85,3 @@ critic_ckpt: str = 'shared_critic.pth'
 actor_lr = 1e-3
 
 normalise=True # normalise the observations and state
-
