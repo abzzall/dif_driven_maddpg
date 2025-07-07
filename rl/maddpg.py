@@ -11,7 +11,86 @@ from abc import ABC, abstractmethod
 import torch.nn.functional as F
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from config import *
-from typing import Union
+from typing import Union, Optional
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+
+
+@torch.no_grad()
+def plot_trajectory(
+    env: DiffDriveParallelEnv,
+    actor_weights_path: str,
+    seed: Optional[int] = None,
+    steps: Optional[int] = None,
+    save_path: str = "trajectory.png"
+) -> None:
+    """
+    Simulates and saves a trajectory plot of agents using a pre-trained actor policy.
+
+    Args:
+        env (DiffDriveParallelEnv): The environment instance.
+        actor_weights_path (str): Path to the actor weights file (.pt).
+        seed (int, optional): Seed for reproducibility.
+        steps (int, optional): Number of steps to simulate. Defaults to env.max_steps.
+        save_path (str): File path to save the generated PNG image.
+    """
+    steps = steps or env.max_steps
+    state, obs = env.reset_tensor(seed)
+
+    num_agents = env._num_agents
+    obs_dim = env.obs_dim
+    act_dim = env.action_dim
+    device = env.device
+
+    # Load trained actor
+    actor = SimpleActor(obs_dim, act_dim).to(device)
+    actor.load_checkpoint(actor_weights_path)
+    actor.eval()
+
+    # Collect trajectories
+    traj = [env.agent_pos.clone().detach().cpu().numpy()]  # list of [N, 2] arrays
+    for _ in range(steps):
+        actions = actor(obs).clamp(-1, 1)  # shape: [N, 2]
+        state, obs, _, dones = env.step_tensor(actions)
+        traj.append(env.agent_pos.clone().detach().cpu().numpy())
+        if dones.all():
+            break
+    traj = np.stack(traj, axis=1)  # shape: [N, T, 2]
+
+    # === Plot ===
+    fig, ax = plt.subplots(figsize=(7, 7))
+    half = env.env_size.item() / 2
+    ax.set_xlim(-half, half)
+    ax.set_ylim(-half, half)
+    ax.set_aspect('equal')
+    ax.set_title("Agent Trajectories")
+
+    # Obstacles
+    for i in range(env.num_obstacles):
+        pos = env.obstacle_pos[i].cpu().numpy()
+        rad = env.obstacle_radius[i].item()
+        circle = plt.Circle(pos, rad, color='gray', alpha=0.5)
+        ax.add_patch(circle)
+
+    # Landmarks
+    for lm in env.landmarks.cpu().numpy():
+        ax.plot(lm[0], lm[1], 'rx', markersize=8, label='Landmark')
+
+    # Agent trajectories
+    colors = plt.cm.get_cmap('tab10', num_agents)
+    for i in range(num_agents):
+        path = traj[i]
+        ax.plot(path[:, 0], path[:, 1], color=colors(i), linewidth=1.5)
+        ax.plot(path[0, 0], path[0, 1], 'o', color='blue')   # start
+        ax.plot(path[-1, 0], path[-1, 1], 'o', color='green')  # end
+
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
 
 class MADDPGBase(ABC):
     def __init__(
