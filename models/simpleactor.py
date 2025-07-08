@@ -93,15 +93,26 @@ class SimpleActor(nn.Module):
         torch.save(checkpoint, filepath)
         print(f"Checkpoint saved to {filepath}")
 
-    def load_checkpoint(self, filepath=None):
+    def load_checkpoint(self, filepath: str = None, raise_on_no_file: bool = False) -> None:
         """
         Loads model and optimizer state from a checkpoint file.
+        If the file is not found, behavior depends on raise_on_no_file.
+
+        Args:
+            filepath (str): Path to the saved checkpoint. If None, uses self.chckpnt_file.
+            raise_on_no_file (bool): If True, raises FileNotFoundError when missing.
+                                     If False, skips loading and keeps model uninitialized or freshly initialized.
         """
         if filepath is None:
             filepath = self.chckpnt_file
 
         if not os.path.isfile(filepath):
-            raise FileNotFoundError(f"Checkpoint file '{filepath}' not found.")
+            if raise_on_no_file:
+                raise FileNotFoundError(f"Checkpoint file '{filepath}' not found.")
+            else:
+                print(f"Checkpoint file '{filepath}' not found. Skipping load.")
+                self.to(self.device)
+                return
 
         checkpoint = torch.load(filepath, map_location=self.device)
         self.load_state_dict(checkpoint['model_state_dict'])

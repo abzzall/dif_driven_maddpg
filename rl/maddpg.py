@@ -14,8 +14,8 @@ from config import *
 from typing import Union, Optional
 import matplotlib.pyplot as plt
 import numpy as np
-
-
+import pickle
+import os
 
 
 @torch.no_grad()
@@ -163,6 +163,9 @@ class MADDPGBase(ABC):
     @abstractmethod
     def save_checkpoint(self):
         pass
+    @abstractmethod
+    def load_checkpoint(self):
+        pass
 
     def main_loop(
             self,
@@ -211,12 +214,94 @@ class MADDPGBase(ABC):
                 observations=next_observations
                 total_steps+=1
             score_history.append(self.env.score.mean())
-            avg_score= np.mean(score_history[-100:])
+            avg_score = torch.stack(score_history[-100:]).mean().item()
             if not evaluate and avg_score>best_score:
                 best_score=avg_score
                 self.save_checkpoint()
                 print('checkpoint saved')
             print('episode', i, 'score %.1f' % self.env.score.mean(), 'avg score %.1f' % avg_score)
+
+    def train_loop(
+            self,
+            n_games: int = n_games,
+            train_each: int = train_each,
+            evaluate: bool = False,
+            checkpoint_path: str = "training_state.pkl"
+    ) -> None:
+        """
+        Resumable training loop with checkpointing.
+
+        Args:
+            n_games (int): Total episodes to run.
+            train_each (int): Frequency to trigger learning.
+            evaluate (bool): If True, only evaluates.
+            checkpoint_path (str): Path to save/load training state.
+        """
+
+        # === Load previous training state if exists ===
+        if os.path.exists(checkpoint_path):
+            with open(checkpoint_path, "rb") as f:
+                state_dict = pickle.load(f)
+            start_episode = state_dict["episode"]
+            score_history = state_dict["score_history"]
+            best_score = state_dict["best_score"]
+            self.replay_buffer.load("replay_buffer.pkl")
+            self.load_checkpoint()
+
+            print(f"Resuming from episode {start_episode}")
+        else:
+            start_episode = 0
+            score_history = []
+            best_score = -float("inf")
+
+        total_steps = 0
+        for i in range(start_episode, n_games):
+            state, obs = self.env.reset_tensor()
+            done = torch.full((self.env.num_agents,), False, dtype=torch.bool)
+
+            while not any(done):
+                if evaluate:
+                    self.env.render()
+                    time.sleep(0.1)
+
+                actions = self.choose_actions(obs)
+                next_state, next_obs, rewards, done = self.env.step_tensor(actions)
+                self.replay_buffer.add(state, obs, actions, rewards, next_state, next_obs, done)
+
+                state = next_state
+                obs = next_obs
+                total_steps += 1
+
+                if not evaluate and total_steps >= train_each:
+                    self.learn()
+                    total_steps = 0
+
+            score = self.env.score.mean()
+            score_history.append(score)
+            avg_score = torch.stack(score_history[-1000:]).mean().item()
+
+            print(f"Episode {i}, Score: {score:.2f}, Avg Score: {avg_score:.2f}")
+
+            if not evaluate and avg_score > best_score:
+                best_score = avg_score
+                self.save_checkpoint()
+                print("Checkpoint saved (best model)")
+
+            # Save training state every 5 episodes
+            if not evaluate and i%5==0:
+                state_dict = {
+                    "episode": i + 1,
+                    "score_history": score_history,
+                    "best_score": best_score,
+                }
+                with open(checkpoint_path, "wb") as f:
+                    pickle.dump(state_dict, f)
+
+                self.replay_buffer.save("replay_buffer.pkl")
+                # self.save_checkpoint() save only best score
+                print("Training progress saved.")
+
+        print("Training complete.")
 
 
 class MADDPGSharedActorCritic(MADDPGBase):
@@ -239,11 +324,11 @@ class MADDPGSharedActorCritic(MADDPGBase):
             self.actor_target (SimpleActor): Target actor network.
         """
         super().__init__(env, device=device)
-        self.critic=SharedCritic(env.state_dim, env.action_dim, env.num_agents, device=self.device)
-        self.critic_target=SharedCritic(env.state_dim, env.action_dim,env.num_agents,  device=self.device)
+        self.critic=SharedCritic(env.state_dim, env.action_dim, env.num_agents, device=self.device, chckpnt_file='shared_critic.pth')
+        self.critic_target=SharedCritic(env.state_dim, env.action_dim,env.num_agents,  device=self.device, chckpnt_file='shared_critic_target.pth')
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.actor=SimpleActor(env.obs_dim, env.action_dim, device=device)
-        self.actor_target=SimpleActor(env.obs_dim, env.action_dim, device=device)
+        self.actor=SimpleActor(env.obs_dim, env.action_dim, device=device, chckpnt_file='shared_actor.pth')
+        self.actor_target=SimpleActor(env.obs_dim, env.action_dim, device=device, chckpnt_file='shared_actor_target.pth')
         self.actor_target.load_state_dict(self.actor.state_dict())
 
     def learn(self):
@@ -271,7 +356,7 @@ class MADDPGSharedActorCritic(MADDPGBase):
             dones:      [B, N]
         """
         if not self.replay_buffer.filled():
-            print('memory not ready')
+            print(f'memory not ready, current size = {self.replay_buffer.size}/{self.replay_buffer.max_size}')
             return
         obs, next_obs, state, next_state, action, reward, done=self.replay_buffer.sample()
         B, N, act_dim = action.shape
@@ -339,5 +424,10 @@ class MADDPGSharedActorCritic(MADDPGBase):
         self.critic.save_checkpoint()
         self.critic_target.save_checkpoint()
         self.actor_target.save_checkpoint()
+    def load_checkpoint(self):
+        self.actor.load_checkpoint()
+        self.critic.load_checkpoint()
+        self.critic_target.load_checkpoint()
+        self.actor_target.load_checkpoint()
 
 
