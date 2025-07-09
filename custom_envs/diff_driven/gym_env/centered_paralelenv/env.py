@@ -35,7 +35,6 @@ class DiffDriveParallelEnv(ParallelEnv):
             agent_radius: float = agent_radius,
             safe_dist: float = safe_dist,
             sens_range: float = sens_range,
-            max_steps: int = max_steps,
             obstacle_size_min: float = obstacle_size_min,
             obstacle_size_max: float = obstacle_size_max,
             collision_penalty_scale: float = collision_penalty_scale,
@@ -65,7 +64,6 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.safe_dist = torch.tensor(safe_dist, device=device)
         self.sens_range = torch.tensor(sens_range, device=device)
 
-        self.max_steps = max_steps
         self.timestep = 0
 
 
@@ -199,11 +197,11 @@ class DiffDriveParallelEnv(ParallelEnv):
 
     def done(self) -> bool:
         """Returns whether episode has reached max steps."""
-        return self.timestep >= self.max_steps
+        return False
 
     def get_dones_tensor(self) -> torch.Tensor:
         """Returns done mask as a tensor of shape [num_agents], dtype=torch.bool."""
-        return torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
+        return torch.full((self.num_agents,),False , dtype=torch.bool)
 
     def render(self) -> None:
         """

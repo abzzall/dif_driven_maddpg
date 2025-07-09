@@ -36,7 +36,7 @@ def plot_trajectory(
         steps (int, optional): Number of steps to simulate. Defaults to env.max_steps.
         save_path (str): File path to save the generated PNG image.
     """
-    steps = steps or env.max_steps
+
     state, obs = env.reset_tensor(seed)
 
     num_agents = env._num_agents
@@ -251,7 +251,8 @@ class MADDPGBase(ABC):
             evaluate: bool = False,
             checkpoint_path: str = "training_state.pkl",
             patience=patience,
-            score_avg_window=score_avg_window
+            score_avg_window=score_avg_window,
+            max_steps=max_steps
     ) -> None:
         """
         Resumable training loop with checkpointing.
@@ -292,7 +293,7 @@ class MADDPGBase(ABC):
             state, obs = self.env.reset_tensor()
             done = torch.full((self.env.num_agents,), False, dtype=torch.bool)
 
-            while not any(done):
+            for j in range(max_steps):
                 # print(f'step: {total_steps}')
                 if evaluate:
                     self.env.render()
