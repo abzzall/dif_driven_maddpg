@@ -160,7 +160,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         state = self.state_tensor()
         observations = self.get_all_obs_tensor()
 
-        dones = torch.full((self.num_agents,),self.timestep >= self.max_steps , dtype=torch.bool)
+        dones = self.get_dones_tensor()
         return state, observations, rewards, dones
 
     def _make_step(self, action_tensor: torch.Tensor) -> torch.Tensor:
