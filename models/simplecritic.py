@@ -77,21 +77,21 @@ class SharedCritic(nn.Module):
 
         return q_values  # shape: [B, N], device: self.device
 
-    def save_checkpoint(self, filepath: str | None = None) -> None:
+    def save_checkpoint(self, filename:str=None, file_prefix:str=None):
         """
         Saves model and optimizer state to a checkpoint file.
-
-        Args:
-            filepath (str | None): Optional custom file path. If None, uses default self.chckpnt_file.
         """
-        if filepath is None:
-            filepath = self.chckpnt_file
+        if filename is None:
+            filename = self.chckpnt_file
+        if file_prefix is not None:
+            filename = f'{file_prefix}_{filename}'
+
         checkpoint = {
             'model_state_dict': self.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict()
         }
-        torch.save(checkpoint, filepath)
-        print(f"Checkpoint saved to {filepath}")
+        torch.save(checkpoint, filename)
+        print(f"Checkpoint saved to {filename}")
 
     def load_checkpoint(self, filepath: str = None, raise_on_no_file: bool = False) -> None:
         """

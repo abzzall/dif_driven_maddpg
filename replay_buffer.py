@@ -1,7 +1,7 @@
 import torch
 from typing import Union, Tuple
 from config import (
-    num_agents, replay_buffer_size, device, batch_size
+    num_agents, replay_buffer_size, device, batch_size, start_training_after
 )
 
 class ReplayBuffer:
@@ -12,7 +12,9 @@ class ReplayBuffer:
             state_dim: int,  # Dimension of global state
             num_agents: int = num_agents,  # Total number of agents
             replay_buffer_size: int = replay_buffer_size,  # Max buffer capacity
-            device: Union[str, torch.device] = device  # Device where tensors are stored
+            device: Union[str, torch.device] = device,  # Device where tensors are stored
+            batch_size: int = batch_size,
+            start_training_after:int = start_training_after
     ):
         """
         Initializes a replay buffer for multi-agent off-policy RL.
@@ -46,6 +48,8 @@ class ReplayBuffer:
         self.size = 0
         self.max_size = replay_buffer_size
         self.device = torch.device(device)
+        self.batch_size = batch_size
+        self.start_training_after=start_training_after
 
     def add(
             self,
@@ -68,7 +72,7 @@ class ReplayBuffer:
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
-    def sample(self, batch_size: int = batch_size) -> Tuple[
+    def sample(self, batch_size: int = None) -> Tuple[
         torch.Tensor,  # obs_buf: [B, N, obs_dim]
         torch.Tensor,  # next_obs_buf: [B, N, obs_dim]
         torch.Tensor,  # state_buf: [B, state_dim]
@@ -77,6 +81,8 @@ class ReplayBuffer:
         torch.Tensor,  # reward_buf: [B, N]
         torch.Tensor  # done_buf: [B, N]
     ]:
+        if batch_size is None:
+            batch_size = self.batch_size
         idx = torch.randint(0, self.size, (batch_size,))
         return (
             self.obs_buf[idx].to(self.device),               # observation
@@ -116,6 +122,11 @@ class ReplayBuffer:
 
     def filled(self):
         return self.size >= self.max_size
+
+    def ready(self):
+        return self.size >= self.start_training_after
+
+
 
     def __len__(self):
         return self.size

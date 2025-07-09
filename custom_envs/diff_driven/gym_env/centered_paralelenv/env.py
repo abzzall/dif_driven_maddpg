@@ -641,7 +641,7 @@ class DiffDriveParallelEnv(ParallelEnv):
     def _compute_rewards_tensor(self) -> torch.Tensor:
         """
         Computes rewards for all agents based on:
-          - Hungarian assignment to nearest landmarks (minimizing global distance)
+          - Dense proximity reward to assigned landmarks (via Hungarian assignment)
           - Penalties for close proximity to other agents
           - Penalties for collisions or closeness to obstacles
 
@@ -656,11 +656,14 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Done on CPU because scipy does not support GPU tensors
         cost_matrix = torch.cdist(
             self.agent_pos.detach().cpu(), self.landmarks.detach().cpu()
-        ).numpy()  # (N, N)
+        ).numpy()  # shape: (N, N)
 
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        total_distance = cost_matrix[row_ind, col_ind].sum()
-        base_reward = -total_distance / N
+        assigned_dists = cost_matrix[row_ind, col_ind]  # shape: (N,)
+        distances_tensor = torch.tensor(assigned_dists, dtype=torch.float32, device=device)
+
+        # ----- Proximity-based reward -----
+        proximity_reward = torch.exp(-distances_tensor / self.safe_dist)  # shape: (N,)
 
         # ----- Collision Penalties -----
         penalties = torch.zeros(N, device=device)
@@ -670,21 +673,19 @@ class DiffDriveParallelEnv(ParallelEnv):
         dist_matrix = torch.norm(delta, dim=2)  # (N, N)
         mask = (dist_matrix < self.safe_dist) & (~torch.eye(N, dtype=torch.bool, device=device))
         penalty_matrix = torch.exp(-dist_matrix) * mask  # (N, N)
-        penalties -= 10.0 * penalty_matrix.sum(dim=1)
+        penalties -= self.collision_penalty_scale * penalty_matrix.sum(dim=1)
 
-        # Agent–Obstacle collision penalty (vectorized)
-        # Shape: agent_pos: (N, 2), obstacle_pos: (M, 2)
+        # Agent–Obstacle collision penalty
         ap = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
         ob = self.obstacle_pos.unsqueeze(0)  # (1, M, 2)
         dist_ap_ob = torch.norm(ap - ob, dim=2)  # (N, M)
         effective_dist = dist_ap_ob - self.obstacle_radius.unsqueeze(0)  # (N, M)
+        close_mask = effective_dist < self.safe_dist
 
-        close_mask = effective_dist < self.safe_dist  # (N, M)
         penalties -= self.collision_penalty_scale * torch.sum(
             torch.exp(-effective_dist) * close_mask, dim=1
         )
 
-        # Final rewards: base_reward + individual penalties
-        rewards = base_reward + penalties  # shape: (N,)
-
-        return rewards  # 1D tensor of shape (N,)
+        # ----- Final rewards -----
+        rewards = proximity_reward + penalties  # shape: (N,)
+        return rewards

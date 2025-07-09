@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 import torch.nn.functional as F
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from config import *
-from typing import Union, Optional
+from typing import Union, Optional, Tuple, Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pickle
@@ -161,7 +161,7 @@ class MADDPGBase(ABC):
         pass
 
     @abstractmethod
-    def save_checkpoint(self):
+    def save_checkpoint(self, file_pref=None):
         pass
     @abstractmethod
     def load_checkpoint(self):
@@ -221,12 +221,37 @@ class MADDPGBase(ABC):
                 print('checkpoint saved')
             print('episode', i, 'score %.1f' % self.env.score.mean(), 'avg score %.1f' % avg_score)
 
+    @staticmethod
+    def plot_learning_curve(score_history, window=30, save_path="learning_curve.png"):
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Ensure scores are detached from GPU and converted to float
+        scores = [s.item() if torch.is_tensor(s) else float(s) for s in score_history]
+
+        moving_avg = np.convolve(scores, np.ones(window) / window, mode='valid')
+        x_vals = range(window - 1, len(scores))
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(scores, label='Raw Reward', alpha=0.3)
+        plt.plot(x_vals, moving_avg, label=f'Moving Avg (window={window})', color='blue')
+        plt.xlabel("Episode")
+        plt.ylabel("Average Reward")
+        plt.title("Learning Curve")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()
+
     def train_loop(
             self,
             n_games: int = n_games,
             train_each: int = train_each,
             evaluate: bool = False,
-            checkpoint_path: str = "training_state.pkl"
+            checkpoint_path: str = "training_state.pkl",
+            patience=patience,
+            score_avg_window=score_avg_window
     ) -> None:
         """
         Resumable training loop with checkpointing.
@@ -243,65 +268,94 @@ class MADDPGBase(ABC):
             with open(checkpoint_path, "rb") as f:
                 state_dict = pickle.load(f)
             start_episode = state_dict["episode"]
-            score_history = state_dict["score_history"]
+            self.score_history = state_dict["score_history"]
             best_score = state_dict["best_score"]
             self.replay_buffer.load("replay_buffer.pkl")
+            episodes_without_improvement = state_dict["episodes_without_improvement"]
+            total_steps = state_dict['total_steps']
+            self.actor_losses=state_dict['actor_losses']
+            self.critic_losses=state_dict['critic_losses']
             self.load_checkpoint()
 
             print(f"Resuming from episode {start_episode}")
         else:
             start_episode = 0
-            score_history = []
+            self.score_history = []
             best_score = -float("inf")
+            episodes_without_improvement = 0
+            total_steps = 0
+            self.actor_losses=[]
+            self.critic_losses=[]
 
-        total_steps = 0
+
         for i in range(start_episode, n_games):
             state, obs = self.env.reset_tensor()
             done = torch.full((self.env.num_agents,), False, dtype=torch.bool)
 
             while not any(done):
+                # print(f'step: {total_steps}')
                 if evaluate:
                     self.env.render()
                     time.sleep(0.1)
-
+                # print(f'chosing action by obs')
                 actions = self.choose_actions(obs)
+                # print(f'taking actions')
                 next_state, next_obs, rewards, done = self.env.step_tensor(actions)
+                # print(f'saving rb')
                 self.replay_buffer.add(state, obs, actions, rewards, next_state, next_obs, done)
 
                 state = next_state
                 obs = next_obs
+
                 total_steps += 1
 
-                if not evaluate and total_steps >= train_each:
-                    self.learn()
-                    total_steps = 0
+                if not evaluate and total_steps % train_each == 0:
+                    critic_loss, actor_loss  = self.learn()
+                    self.actor_losses.append(actor_loss)
+                    self.critic_losses.append(critic_loss)
+                    print(f"Trained at step {total_steps}, actor loss: {actor_loss}, critic loss : {critic_loss}")
 
             score = self.env.score.mean()
-            score_history.append(score)
-            avg_score = torch.stack(score_history[-1000:]).mean().item()
+            self.score_history.append(score)
+            avg_score = torch.stack(self.score_history[-score_avg_window:]).mean().item()
 
             print(f"Episode {i}, Score: {score:.2f}, Avg Score: {avg_score:.2f}")
 
-            if not evaluate and avg_score > best_score:
+            if not evaluate and avg_score > best_score and i>min_episodes_before_early_stop:
                 best_score = avg_score
-                self.save_checkpoint()
+                self.save_checkpoint(file_pref=f'best_{best_score}_{i}')
                 print("Checkpoint saved (best model)")
+                episodes_without_improvement=0
+            else:
+                if i>min_episodes_before_early_stop:
+                    episodes_without_improvement+=1
 
             # Save training state every 5 episodes
-            if not evaluate and i%5==0:
+            if not evaluate and i % 5 == 0:
+
+                print("Training progress saving.")
                 state_dict = {
                     "episode": i + 1,
-                    "score_history": score_history,
+                    "score_history": self.score_history,
                     "best_score": best_score,
+                'episodes_without_improvement': episodes_without_improvement,
+                    'total_steps':total_steps,
+                    'actor_losses':self.actor_losses,
+                    'critic_losses':self.critic_losses
+
+
                 }
                 with open(checkpoint_path, "wb") as f:
                     pickle.dump(state_dict, f)
 
                 self.replay_buffer.save("replay_buffer.pkl")
-                # self.save_checkpoint() save only best score
+                self.save_checkpoint()
                 print("Training progress saved.")
-
+            if episodes_without_improvement >= patience:
+                print(f"\n🛑 Early stopping triggered: No improvement in {patience} episodes.")
+                break
         print("Training complete.")
+        self.plot_learning_curve(self.score_history)
 
 
 class MADDPGSharedActorCritic(MADDPGBase):
@@ -331,7 +385,7 @@ class MADDPGSharedActorCritic(MADDPGBase):
         self.actor_target=SimpleActor(env.obs_dim, env.action_dim, device=device, chckpnt_file='shared_actor_target.pth')
         self.actor_target.load_state_dict(self.actor.state_dict())
 
-    def learn(self):
+    def learn(self) -> tuple[None, None] | tuple[float, float]:
         """
         Performs one training step for both actor and critic using MADDPG.
 
@@ -355,9 +409,10 @@ class MADDPGSharedActorCritic(MADDPGBase):
             rewards:    [B, N]
             dones:      [B, N]
         """
-        if not self.replay_buffer.filled():
-            print(f'memory not ready, current size = {self.replay_buffer.size}/{self.replay_buffer.max_size}')
-            return
+
+        if  not self.replay_buffer.ready():
+            print(f'memory not ready, current size = {self.replay_buffer.size}/{self.replay_buffer.start_training_after}')
+            return None, None
         obs, next_obs, state, next_state, action, reward, done=self.replay_buffer.sample()
         B, N, act_dim = action.shape
         with torch.no_grad():
@@ -375,13 +430,14 @@ class MADDPGSharedActorCritic(MADDPGBase):
 
         pred_actions=self.actor(obs)                                                #pi(o)
         joint_pred_actions=pred_actions.view(B, N*act_dim)                        #pi(o) joint
-        actor_loss=-self.critic(state, joint_pred_actions).mean()                #- Q(s, pi(o)) mean
+        actor_loss=-self.critic(state, joint_pred_actions).mean()                #- Q(s, [pi(o)]) mean
         self.actor.optimizer.zero_grad()
         actor_loss.backward()
         self.actor.optimizer.step()
 
         self.update_params_vectorized(self.critic, self.critic_target, tau)
         self.update_params_vectorized(self.actor, self.actor_target, tau)
+        return critic_loss.item(), actor_loss.item()
 
     def  load_actor(self):
         """
@@ -419,11 +475,11 @@ class MADDPGSharedActorCritic(MADDPGBase):
         """
         return self.actor.choose_action(obs_list, use_noise=use_noise, eval_mode=True)
 
-    def save_checkpoint(self):
-        self.actor.save_checkpoint()
-        self.critic.save_checkpoint()
-        self.critic_target.save_checkpoint()
-        self.actor_target.save_checkpoint()
+    def save_checkpoint(self, file_pref=None):
+        self.actor.save_checkpoint(file_prefix=file_pref)
+        self.critic.save_checkpoint(file_prefix=file_pref)
+        self.critic_target.save_checkpoint(file_prefix=file_pref)
+        self.actor_target.save_checkpoint(file_prefix=file_pref)
     def load_checkpoint(self):
         self.actor.load_checkpoint()
         self.critic.load_checkpoint()

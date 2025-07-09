@@ -16,10 +16,10 @@ num_agents = 6
 num_obstacles = 4  # 1 obstacle per agent for balanced navigation
 
 # Environment size (2D continuous space)
-env_size = 10.0  # Map is 10x10 meters
+env_size = 100  # Map is 10x10 meters
 
 # Episode length
-max_steps = 500  # Long enough for full behavior to emerge, short enough for stable training
+max_steps = 1000  # Long enough for full behavior to emerge, short enough for stable training
 
 # ====== Observation, State, Action dimensions ======
 # obs_dim = 78     # Per-agent observation dimension
@@ -46,13 +46,13 @@ collision_penalty_scale = 10.0  # Multiplied by exp(-d) if d < safe_dist
 
 # ====== Replay Buffer and Training ======
 replay_buffer_size = 100_000  # Large enough to avoid overfitting, safe for 6GB GPU (store on CPU)
-batch_size = 256               # Optimized for 6GB GPU, adjust if needed
-start_training_after = 5_000   # Sooner training for small buffer
+batch_size = 128               # Optimized for 6GB GPU, adjust if needed
+start_training_after = 2048 # 1000   # Sooner training for small buffer
 
 # ====== Network architecture ======
-hidden_dim_actor = 256      # Sufficient for obs_dim=78, 2-layer ReLU net
-hidden_dim_critic = 256     # For input_dim = state_dim + joint_actions = 99
-num_critic_heads = 3        # Average over 3 heads for ensemble stability
+# hidden_dim_actor = 256      # Sufficient for obs_dim=78, 2-layer ReLU net
+# hidden_dim_critic = 256     # For input_dim = state_dim + joint_actions = 99
+# num_critic_heads = 3        # Average over 3 heads for ensemble stability
 
 # ====== Exploration Noise ======
 std_scale = 0.3             # Gaussian noise std = 0.3 * max_action
@@ -68,8 +68,8 @@ safe_dist = v_lin_max
 sens_range = 5 * v_lin_max
 
 
-obstacle_size_min=0.3
-obstacle_size_max=3
+obstacle_size_min=1
+obstacle_size_max=5
 
 # === Training and Replay ===
 gamma = 0.99                        # Discount factor
@@ -85,3 +85,12 @@ critic_ckpt: str = 'shared_critic.pth'
 actor_lr = 1e-3
 
 normalise=True # normalise the observations and state
+
+# === Training Configuration ===
+
+
+
+patience = 200                   # Max episodes with no improvement before early stopping
+min_episodes_before_early_stop = 100  # Minimum number of episodes before early stopping is considered
+
+score_avg_window = 50            # Number of recent episodes to average for performance evaluation
