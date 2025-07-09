@@ -639,51 +639,43 @@ class DiffDriveParallelEnv(ParallelEnv):
     def _compute_rewards_tensor(self) -> torch.Tensor:
         """
         Computes rewards for all agents based on:
-          - Dense proximity reward to assigned landmarks (via Hungarian assignment)
+          - Penalty proportional to distance to assigned landmarks (via Hungarian assignment)
           - Penalties for close proximity to other agents
           - Penalties for collisions or closeness to obstacles
 
         Returns:
             torch.Tensor: A 1D tensor of shape (num_agents,) representing individual rewards.
         """
-
         N = self._num_agents
         device = self.agent_pos.device
 
-        # ----- Hungarian Assignment: agents <-> landmarks -----
-        # Done on CPU because scipy does not support GPU tensors
+        # ----- Landmark Distance Penalty -----
         cost_matrix = torch.cdist(
             self.agent_pos.detach().cpu(), self.landmarks.detach().cpu()
-        ).numpy()  # shape: (N, N)
+        ).numpy()  # (N, N)
 
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        assigned_dists = cost_matrix[row_ind, col_ind]  # shape: (N,)
+        assigned_dists = cost_matrix[row_ind, col_ind]  # (N,)
         distances_tensor = torch.tensor(assigned_dists, dtype=torch.float32, device=device)
 
-        # ----- Proximity-based reward -----
-        proximity_reward = torch.exp(-distances_tensor / self.safe_dist)  # shape: (N,)
+        # Negative distance as reward (closer is better)
+        rewards = -distances_tensor  # shape: (N,)
 
-        # ----- Collision Penalties -----
-        penalties = torch.zeros(N, device=device)
-
-        # Agent–Agent collision penalty
+        # ----- Agent–Agent collision penalty -----
         delta = self.agent_pos.unsqueeze(1) - self.agent_pos.unsqueeze(0)  # (N, N, 2)
         dist_matrix = torch.norm(delta, dim=2)  # (N, N)
         mask = (dist_matrix < self.safe_dist) & (~torch.eye(N, dtype=torch.bool, device=device))
-        penalty_matrix = torch.exp(-dist_matrix) * mask  # (N, N)
-        penalties -= self.collision_penalty_scale * penalty_matrix.sum(dim=1)
+        penalty_matrix = torch.exp(-dist_matrix) * mask
+        rewards -= self.collision_penalty_scale * penalty_matrix.sum(dim=1)
 
-        # Agent–Obstacle collision penalty
+        # ----- Agent–Obstacle collision penalty -----
         ap = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
         ob = self.obstacle_pos.unsqueeze(0)  # (1, M, 2)
         dist_ap_ob = torch.norm(ap - ob, dim=2)  # (N, M)
         effective_dist = dist_ap_ob - self.obstacle_radius.unsqueeze(0)  # (N, M)
         close_mask = effective_dist < self.safe_dist
-
-        penalties -= self.collision_penalty_scale * torch.sum(
+        rewards -= self.collision_penalty_scale * torch.sum(
             torch.exp(-effective_dist) * close_mask, dim=1
         )
 
-        # ----- Final rewards -----
-        rewards = proximity_reward + penalties  # shape: (N,)
         return rewards

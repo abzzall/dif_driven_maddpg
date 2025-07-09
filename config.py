@@ -42,7 +42,7 @@ dv_ang_max = torch.pi/12        # Max delta angular velocity per step
 sens_range = 5 * v_lin_max  # How far agents can detect obstacles
 
 # ====== Reward settings ======
-collision_penalty_scale = 10.0  # Multiplied by exp(-d) if d < safe_dist
+collision_penalty_scale = 30.0  # Multiplied by exp(-d) if d < safe_dist
 
 # ====== Replay Buffer and Training ======
 replay_buffer_size = 100_000  # Large enough to avoid overfitting, safe for 6GB GPU (store on CPU)
