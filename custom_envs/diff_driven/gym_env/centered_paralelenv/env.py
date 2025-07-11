@@ -141,10 +141,10 @@ class DiffDriveParallelEnv(ParallelEnv):
             for agent in self.agents
         ])
 
-        rewards_tensor=self._make_step(action_tensor)
+        self._make_step(action_tensor)
         # Generate new observations and rewards
         observations=self.get_all_obs_dict()
-        rewards={agent_id:rewards_tensor[idx].item() for idx, agent_id in enumerate(self.agents)}
+        rewards={agent_id:self.current_rewards[idx].item() for idx, agent_id in enumerate(self.agents)}
         done=self.done()
         terminations={ agent_id: done for agent_id in self.agents}
         truncations={ agent_id: False for agent_id in self.agents}
@@ -157,14 +157,14 @@ class DiffDriveParallelEnv(ParallelEnv):
         torch.Tensor,  # rewards: [N]
         torch.Tensor  # dones: [N], dtype=bool
     ]:
-        rewards=self._make_step(actions_tensor)
+        self._make_step(actions_tensor)
         state = self.state_tensor()
         observations = self.get_all_obs_tensor()
 
         dones = self.get_dones_tensor()
-        return state, observations, rewards, dones
+        return state, observations, self.current_rewards, dones
 
-    def _make_step(self, action_tensor: torch.Tensor) -> torch.Tensor:
+    def _make_step(self, action_tensor: torch.Tensor):
         """
         Applies the action tensor to update the environment state.
 
@@ -181,9 +181,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         self._update_positions()  # uses self.agent_vel_lin, self.agent_dir
         self._handle_collisions()  # modifies self.agent_pos if needed
         self.timestep += 1
-        rewards= self._compute_rewards_tensor()
-        self.score += rewards
-        return rewards
+        self._compute_rewards_tensor()
+        self.score += self.current_rewards
 
     def get_all_obs_dict(self) -> Dict[str, np.ndarray]:
         """Returns per-agent observations as a dictionary (CPU numpy arrays)."""
@@ -677,6 +676,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         normed_ob_penalty = (self.safe_dist - effective_dist) / self.safe_dist
         normed_ob_penalty = torch.clamp(normed_ob_penalty, min=0.0) * ob_mask
         rewards -= self.collision_penalty_scale * normed_ob_penalty.sum(dim=1)
+        self.current_rewards = rewards
+        self.old_mean_hungarian=new_mean_hungarian
 
         return rewards
 
