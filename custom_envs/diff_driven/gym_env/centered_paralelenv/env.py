@@ -639,43 +639,51 @@ class DiffDriveParallelEnv(ParallelEnv):
     def _compute_rewards_tensor(self) -> torch.Tensor:
         """
         Computes rewards for all agents based on:
-          - Penalty proportional to distance to assigned landmarks (via Hungarian assignment)
-          - Penalties for close proximity to other agents
-          - Penalties for collisions or closeness to obstacles
+          - Normalized distance to assigned landmarks (Hungarian matching)
+          - Local penalties for proximity to agents and obstacles (within safe_dist)
+          - Local stopping reward when agent is centered on its assigned landmark (within agent_radius)
 
         Returns:
             torch.Tensor: A 1D tensor of shape (num_agents,) representing individual rewards.
         """
+
         N = self._num_agents
         device = self.agent_pos.device
 
-        # ----- Landmark Distance Penalty -----
+        # --- Hungarian assignment (global goal reward) ---
         cost_matrix = torch.cdist(
             self.agent_pos.detach().cpu(), self.landmarks.detach().cpu()
         ).numpy()  # (N, N)
-
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        assigned_dists = cost_matrix[row_ind, col_ind]  # (N,)
-        distances_tensor = torch.tensor(assigned_dists, dtype=torch.float32, device=device)
+        assigned_landmarks = self.landmarks[col_ind].to(device)  # (N, 2)
+        d_goal = torch.norm(self.agent_pos - assigned_landmarks, dim=1)  # (N,)
 
-        # Negative distance as reward (closer is better)
-        rewards = -distances_tensor  # shape: (N,)
+        # Exponential goal reward (tau=1)
+        rewards = torch.exp(-d_goal)  # ∈ (0, 1]
 
-        # ----- Agent–Agent collision penalty -----
+        # --- Local stopping reward (if within agent_radius of assigned landmark) ---
+        assigned_landmarks = self.landmarks[col_ind].to(device)  # (N, 2)
+        stop_dists = torch.norm(self.agent_pos - assigned_landmarks, dim=1)  # (N,)
+        inside_landmark = stop_dists < self.agent_radius
+        stop_bonus = (1.0 - stop_dists / self.agent_radius) * inside_landmark.float()
+        rewards += stop_bonus  # Add local stop bonus
+
+        # --- Agent–Agent penalty (within safe_dist) ---
         delta = self.agent_pos.unsqueeze(1) - self.agent_pos.unsqueeze(0)  # (N, N, 2)
         dist_matrix = torch.norm(delta, dim=2)  # (N, N)
-        mask = (dist_matrix < self.safe_dist) & (~torch.eye(N, dtype=torch.bool, device=device))
-        penalty_matrix = torch.exp(-dist_matrix) * mask
-        rewards -= self.collision_penalty_scale * penalty_matrix.sum(dim=1)
+        aa_mask = (dist_matrix < self.safe_dist) & (~torch.eye(N, dtype=torch.bool, device=device))
+        normed_aa_penalty = (self.safe_dist - dist_matrix) / self.safe_dist
+        normed_aa_penalty = torch.clamp(normed_aa_penalty, min=0.0) * aa_mask
+        rewards -= self.collision_penalty_scale * normed_aa_penalty.sum(dim=1)
 
-        # ----- Agent–Obstacle collision penalty -----
+        # --- Agent–Obstacle penalty (within safe_dist) ---
         ap = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
         ob = self.obstacle_pos.unsqueeze(0)  # (1, M, 2)
         dist_ap_ob = torch.norm(ap - ob, dim=2)  # (N, M)
         effective_dist = dist_ap_ob - self.obstacle_radius.unsqueeze(0)  # (N, M)
-        close_mask = effective_dist < self.safe_dist
-        rewards -= self.collision_penalty_scale * torch.sum(
-            torch.exp(-effective_dist) * close_mask, dim=1
-        )
+        ob_mask = effective_dist < self.safe_dist
+        normed_ob_penalty = (self.safe_dist - effective_dist) / self.safe_dist
+        normed_ob_penalty = torch.clamp(normed_ob_penalty, min=0.0) * ob_mask
+        rewards -= self.collision_penalty_scale * normed_ob_penalty.sum(dim=1)
 
         return rewards
