@@ -566,8 +566,13 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         # Other agents
         mask = torch.arange(self._num_agents, device=device) != idx
-        rel_pos = (self.agent_pos[mask] - pos) @ rot.T
-        rel_dir = self.agent_dir[mask] - heading
+        other_pos = self.agent_pos[mask]
+        rel_pos_global = other_pos - pos
+        dist_to_agents = torch.norm(rel_pos_global, dim=1)
+        sorted_idx = torch.argsort(dist_to_agents)
+
+        rel_pos = (rel_pos_global[sorted_idx]) @ rot.T
+        rel_dir = self.agent_dir[mask][sorted_idx] - heading
         rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
 
         if normalize:
@@ -577,14 +582,18 @@ class DiffDriveParallelEnv(ParallelEnv):
         else:
             rel_dir = rel_dir.unsqueeze(1)
 
-        lin_vels = self.agent_vel_lin[mask].unsqueeze(1).to(device)
-        ang_vels = self.agent_vel_ang[mask].unsqueeze(1).to(device)
+        lin_vels = self.agent_vel_lin[mask][sorted_idx].unsqueeze(1).to(device)
+        ang_vels = self.agent_vel_ang[mask][sorted_idx].unsqueeze(1).to(device)
         if normalize:
             lin_vels = lin_vels / self.v_lin_max
             ang_vels = ang_vels / self.v_ang_max
 
         # Landmarks
-        rel_lm = (self.landmarks - pos) @ rot.T
+        rel_lm_global = self.landmarks - pos
+        dist_to_lm = torch.norm(rel_lm_global, dim=1)
+        sorted_lm_idx = torch.argsort(dist_to_lm)
+
+        rel_lm = (rel_lm_global[sorted_lm_idx]) @ rot.T
         if normalize:
             rel_lm = rel_lm / self.env_size
 
@@ -626,13 +635,24 @@ class DiffDriveParallelEnv(ParallelEnv):
         components = [
             own_lin, own_ang,
             rel_pos.flatten(),
-            rel_dir_sin.flatten(), rel_dir_cos.flatten() if normalize else rel_dir.flatten(),
+        ]
+
+        if normalize:
+            components.extend([rel_dir_sin.flatten(), rel_dir_cos.flatten()])
+        else:
+            components.append(rel_dir.flatten())
+
+        components.extend([
             lin_vels.flatten(),
             ang_vels.flatten(),
             rel_lm.flatten(),
             edge_dists,
-            obs_angle_sin, obs_angle_cos if normalize else obs_angles
-        ]
+        ])
+
+        if normalize:
+            components.extend([obs_angle_sin, obs_angle_cos])
+        else:
+            components.append(obs_angles)
 
         return torch.cat(components, dim=0).float().to(device)
 
