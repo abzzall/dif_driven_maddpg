@@ -69,11 +69,11 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         self.action_dim=2
         if normalise:
-            self.obs_dim = 3 * self.num_obstacles + 2 * self.num_landmarks + (self.num_agents - 1) * 6 + self.action_dim
-            self.state_dim = 6 * self.num_agents + 2 * self.num_landmarks + 3 * self.num_obstacles
+            self.obs_dim = 3 * self.num_obstacles + 2 * self.num_landmarks + (self.num_agents - 1) * 4
+            self.state_dim = 4 * self.num_agents + 2 * self.num_landmarks + 3 * self.num_obstacles
         else:
-            self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*5+self.action_dim
-            self.state_dim=5*self.num_agents+2*self.num_landmarks+3*self.num_obstacles
+            self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*3+self.action_dim
+            self.state_dim=3*self.num_agents+2*self.num_landmarks+3*self.num_obstacles
 
         # Observation and action spaces (remain on CPU)
         self.observation_spaces = {
@@ -328,19 +328,15 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         ag_pos = self.agent_pos[ag_order]  # (N, 2)
         ag_dir = self.agent_dir[ag_order]  # (N,)
-        ag_vlin = self.agent_vel_lin[ag_order].unsqueeze(1)  # (N, 1)
-        ag_vang = self.agent_vel_ang[ag_order].unsqueeze(1)  # (N, 1)
 
         if normalize:
             ag_pos = ag_pos / (self.env_size / 2)  # → [-1, 1]
             ag_dir_sin = torch.sin(ag_dir).unsqueeze(1)
             ag_dir_cos = torch.cos(ag_dir).unsqueeze(1)
-            ag_vlin = ag_vlin / self.v_lin_max
-            ag_vang = ag_vang / self.v_ang_max
-            ag_state = torch.cat([ag_pos, ag_dir_sin, ag_dir_cos, ag_vlin, ag_vang], dim=1).flatten()  # (6N,)
+            ag_state = torch.cat([ag_pos, ag_dir_sin, ag_dir_cos], dim=1).flatten()  # (6N,)
         else:
             ag_dir = ag_dir.unsqueeze(1)
-            ag_state = torch.cat([ag_pos, ag_dir, ag_vlin, ag_vang], dim=1).flatten()  # (5N,)
+            ag_state = torch.cat([ag_pos, ag_dir], dim=1).flatten()  # (5N,)
 
         # Combine with static state
         return torch.cat([self.static_state_tensor, ag_state], dim=0).float().to(device)
@@ -555,13 +551,6 @@ class DiffDriveParallelEnv(ParallelEnv):
             torch.stack([-sin_h, cos_h])
         ])  # (2, 2)
 
-        # Own motion
-        own_lin = self.agent_vel_lin[idx].unsqueeze(0).to(device)
-        own_ang = self.agent_vel_ang[idx].unsqueeze(0).to(device)
-        if normalize:
-            own_lin = own_lin / self.v_lin_max
-            own_ang = own_ang / self.v_ang_max
-
         # Other agents
         mask = torch.arange(self._num_agents, device=device) != idx
         other_pos = self.agent_pos[mask]
@@ -579,12 +568,6 @@ class DiffDriveParallelEnv(ParallelEnv):
             rel_dir_cos = torch.cos(rel_dir).unsqueeze(1)
         else:
             rel_dir = rel_dir.unsqueeze(1)
-
-        lin_vels = self.agent_vel_lin[mask][sorted_idx].unsqueeze(1).to(device)
-        ang_vels = self.agent_vel_ang[mask][sorted_idx].unsqueeze(1).to(device)
-        if normalize:
-            lin_vels = lin_vels / self.v_lin_max
-            ang_vels = ang_vels / self.v_ang_max
 
         # Landmarks
         rel_lm_global = self.landmarks - pos
@@ -630,10 +613,7 @@ class DiffDriveParallelEnv(ParallelEnv):
             obs_angles = pad(obs_angles)
 
         # Final concat
-        components = [
-            own_lin, own_ang,
-            rel_pos.flatten(),
-        ]
+        components = [rel_pos.flatten()]
 
         if normalize:
             components.extend([rel_dir_sin.flatten(), rel_dir_cos.flatten()])
@@ -641,8 +621,6 @@ class DiffDriveParallelEnv(ParallelEnv):
             components.append(rel_dir.flatten())
 
         components.extend([
-            lin_vels.flatten(),
-            ang_vels.flatten(),
             rel_lm.flatten(),
             edge_dists,
         ])
@@ -769,6 +747,12 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
             normalise=normalise)
         self.dv_lin_max = dv_lin_max
         self.dv_ang_max = dv_ang_max
+        if normalise:
+            self.obs_dim = 3 * self.num_obstacles + 2 * self.num_landmarks + (self.num_agents - 1) * 6 + self.action_dim
+            self.state_dim = 6 * self.num_agents + 2 * self.num_landmarks + 3 * self.num_obstacles
+        else:
+            self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*5+self.action_dim
+            self.state_dim=5*self.num_agents+2*self.num_landmarks+3*self.num_obstacles
 
 
     def _apply_actions(self, action_tensor: torch.Tensor):
@@ -783,3 +767,162 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
         # Update velocities with clamping
         self.agent_vel_lin = (self.agent_vel_lin + dv_lin).clamp(0, self.v_lin_max.item())
         self.agent_vel_ang = (self.agent_vel_ang + dv_ang).clamp(-self.v_ang_max, self.v_ang_max)
+    def get_observation(self, idx: int) -> torch.Tensor:
+        device = self.device
+        normalize = self.normalise
+
+        pos = self.agent_pos[idx].to(device)  # (2,)
+        heading = self.agent_dir[idx].to(device)
+
+        cos_h = torch.cos(heading)
+        sin_h = torch.sin(heading)
+        rot = torch.stack([
+            torch.stack([cos_h, sin_h]),
+            torch.stack([-sin_h, cos_h])
+        ])  # (2, 2)
+
+        # Own motion
+        own_lin = self.agent_vel_lin[idx].unsqueeze(0).to(device)
+        own_ang = self.agent_vel_ang[idx].unsqueeze(0).to(device)
+        if normalize:
+            own_lin = own_lin / self.v_lin_max
+            own_ang = own_ang / self.v_ang_max
+
+        # Other agents
+        mask = torch.arange(self._num_agents, device=device) != idx
+        other_pos = self.agent_pos[mask]
+        rel_pos_global = other_pos - pos
+        dist_to_agents = torch.norm(rel_pos_global, dim=1)
+        sorted_idx = torch.argsort(dist_to_agents)
+
+        rel_pos = (rel_pos_global[sorted_idx]) @ rot.T
+        rel_dir = self.agent_dir[mask][sorted_idx] - heading
+        rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
+
+        if normalize:
+            rel_pos = rel_pos / self.env_size
+            rel_dir_sin = torch.sin(rel_dir).unsqueeze(1)
+            rel_dir_cos = torch.cos(rel_dir).unsqueeze(1)
+        else:
+            rel_dir = rel_dir.unsqueeze(1)
+
+        lin_vels = self.agent_vel_lin[mask][sorted_idx].unsqueeze(1).to(device)
+        ang_vels = self.agent_vel_ang[mask][sorted_idx].unsqueeze(1).to(device)
+        if normalize:
+            lin_vels = lin_vels / self.v_lin_max
+            ang_vels = ang_vels / self.v_ang_max
+
+        # Landmarks
+        rel_lm_global = self.landmarks - pos
+        dist_to_lm = torch.norm(rel_lm_global, dim=1)
+        sorted_lm_idx = torch.argsort(dist_to_lm)
+
+        rel_lm = (rel_lm_global[sorted_lm_idx]) @ rot.T
+        if normalize:
+            rel_lm = rel_lm / self.env_size
+
+        # Obstacles
+        obs_vec = self.obstacle_pos - pos
+        center_dists = torch.norm(obs_vec, dim=1)
+        edge_dists = center_dists - self.obstacle_radius
+        in_range = edge_dists < self.sens_range
+        obs_idx = torch.argsort(edge_dists)
+        obs_idx = obs_idx[in_range[obs_idx]]
+
+        edge_dists = edge_dists[obs_idx]
+        if normalize:
+            edge_dists = edge_dists / self.sens_range
+
+        obs_vec_local = obs_vec[obs_idx] @ rot.T
+        obs_angles = torch.atan2(obs_vec_local[:, 1], obs_vec_local[:, 0])
+
+        if normalize:
+            obs_angle_sin = torch.sin(obs_angles)
+            obs_angle_cos = torch.cos(obs_angles)
+
+        # Pad obstacles
+        pad_len = self.num_obstacles - len(obs_idx)
+
+        def pad(x, value=0):
+            if pad_len > 0:
+                return torch.cat([x, torch.full((pad_len,), value, device=device)], dim=0)
+            return x
+
+        edge_dists = pad(edge_dists)
+        if normalize:
+            obs_angle_sin = pad(obs_angle_sin)
+            obs_angle_cos = pad(obs_angle_cos)
+        else:
+            obs_angles = pad(obs_angles)
+
+        # Final concat
+        components = [
+            own_lin, own_ang,
+            rel_pos.flatten(),
+        ]
+
+        if normalize:
+            components.extend([rel_dir_sin.flatten(), rel_dir_cos.flatten()])
+        else:
+            components.append(rel_dir.flatten())
+
+        components.extend([
+            lin_vels.flatten(),
+            ang_vels.flatten(),
+            rel_lm.flatten(),
+            edge_dists,
+        ])
+
+        if normalize:
+            components.extend([obs_angle_sin, obs_angle_cos])
+        else:
+            components.append(obs_angles)
+
+        return torch.cat(components, dim=0).float().to(device)
+
+    def state_tensor(self) -> torch.Tensor:
+        """
+        Returns the full global state tensor for the current timestep.
+
+        Structure (sorted by distance to origin for consistency):
+            [landmarks (2L) | obstacles (3M) | agents (5N)]
+
+        Agent fields:
+            - position: (x, y)
+            - direction: θ (as sin, cos if normalized)
+            - linear velocity
+            - angular velocity
+
+        Normalization if self.normalise is True:
+            - Positions: divided by (env_size / 2)
+            - Velocities: divided by v_lin_max / v_ang_max
+            - Angle: converted to sin(θ), cos(θ)
+
+        Returns:
+            torch.Tensor: 1D state vector of shape [2L + 3M + (5 or 6)×N], on self.device
+        """
+        device = self.device
+        normalize = self.normalise
+
+        # Sort agents by distance to origin
+        ag_dists = torch.norm(self.agent_pos, dim=1)
+        ag_order = torch.argsort(ag_dists)
+
+        ag_pos = self.agent_pos[ag_order]  # (N, 2)
+        ag_dir = self.agent_dir[ag_order]  # (N,)
+        ag_vlin = self.agent_vel_lin[ag_order].unsqueeze(1)  # (N, 1)
+        ag_vang = self.agent_vel_ang[ag_order].unsqueeze(1)  # (N, 1)
+
+        if normalize:
+            ag_pos = ag_pos / (self.env_size / 2)  # → [-1, 1]
+            ag_dir_sin = torch.sin(ag_dir).unsqueeze(1)
+            ag_dir_cos = torch.cos(ag_dir).unsqueeze(1)
+            ag_vlin = ag_vlin / self.v_lin_max
+            ag_vang = ag_vang / self.v_ang_max
+            ag_state = torch.cat([ag_pos, ag_dir_sin, ag_dir_cos, ag_vlin, ag_vang], dim=1).flatten()  # (6N,)
+        else:
+            ag_dir = ag_dir.unsqueeze(1)
+            ag_state = torch.cat([ag_pos, ag_dir, ag_vlin, ag_vang], dim=1).flatten()  # (5N,)
+
+        # Combine with static state
+        return torch.cat([self.static_state_tensor, ag_state], dim=0).float().to(device)
