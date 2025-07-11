@@ -30,8 +30,8 @@ class DiffDriveParallelEnv(ParallelEnv):
             num_obstacles: int = num_obstacles,
             v_lin_max: float = v_lin_max,
             v_ang_max: float = v_ang_max,
-            dv_lin_max: float = dv_lin_max,
-            dv_ang_max: float = dv_ang_max,
+            # dv_lin_max: float = dv_lin_max,
+            # dv_ang_max: float = dv_ang_max,
             agent_radius: float = agent_radius,
             safe_dist: float = safe_dist,
             sens_range: float = sens_range,
@@ -58,8 +58,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.num_obstacles = num_obstacles
         self.v_lin_max = torch.tensor(v_lin_max, device=device)
         self.v_ang_max = torch.tensor(v_ang_max, device=device)
-        self.dv_lin_max = torch.tensor(dv_lin_max, device=device)
-        self.dv_ang_max = torch.tensor(dv_ang_max, device=device)
+        # self.dv_lin_max = torch.tensor(dv_lin_max, device=device)
+        # self.dv_ang_max = torch.tensor(dv_ang_max, device=device)
         self.agent_radius = torch.tensor(agent_radius, device=device)
         self.safe_dist = torch.tensor(safe_dist, device=device)
         self.sens_range = torch.tensor(sens_range, device=device)
@@ -461,12 +461,9 @@ class DiffDriveParallelEnv(ParallelEnv):
         with clamping based on environment constraints.
         """
         # Assumes action_tensor ∈ [-1, 1]
-        dv_lin = action_tensor[:, 0] * self.dv_lin_max
-        dv_ang = action_tensor[:, 1] * self.dv_ang_max
-
         # Update velocities with clamping
-        self.agent_vel_lin = (self.agent_vel_lin + dv_lin).clamp(0, self.v_lin_max.item())
-        self.agent_vel_ang = (self.agent_vel_ang + dv_ang).clamp(-self.v_ang_max, self.v_ang_max)
+        self.agent_vel_lin = 0.5*(action_tensor[:, 0] +1)* self.v_lin_max
+        self.agent_vel_ang = action_tensor[:, 1] * self.v_ang_max
 
     def _update_positions(self):
         """
@@ -707,3 +704,62 @@ class DiffDriveParallelEnv(ParallelEnv):
         rewards -= self.collision_penalty_scale * normed_ob_penalty.sum(dim=1)
 
         return rewards
+
+
+
+class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
+    def __init__(
+            self,
+            num_agents: int = num_agents,
+            obs_low: float = obs_low,
+            obs_high: float = obs_high,
+            act_low: float = act_low,
+            act_high: float = act_high,
+            env_size: float = env_size,
+            num_obstacles: int = num_obstacles,
+            v_lin_max: float = v_lin_max,
+            v_ang_max: float = v_ang_max,
+            dv_lin_max: float = dv_lin_max,
+            dv_ang_max: float = dv_ang_max,
+            agent_radius: float = agent_radius,
+            safe_dist: float = safe_dist,
+            sens_range: float = sens_range,
+            obstacle_size_min: float = obstacle_size_min,
+            obstacle_size_max: float = obstacle_size_max,
+            collision_penalty_scale: float = collision_penalty_scale,
+            device: Union[str, torch.device] = device,
+            normalise=normalise):
+        super().__init__(
+            num_agents=num_agents,
+            obs_low=obs_low,
+            obs_high=obs_high,
+            act_low=act_low,
+            act_high=act_high,
+            env_size=env_size,
+            num_obstacles=num_obstacles,
+            v_lin_max=v_lin_max,
+            v_ang_max=v_ang_max,
+            agent_radius=agent_radius,
+            safe_dist=safe_dist,
+            sens_range=sens_range,
+            obstacle_size_min=obstacle_size_min,
+            obstacle_size_max=obstacle_size_max,
+            collision_penalty_scale=collision_penalty_scale,
+            device=device,
+            normalise=normalise)
+        self.dv_lin_max = dv_lin_max
+        self.dv_ang_max = dv_ang_max
+
+
+    def _apply_actions(self, action_tensor: torch.Tensor):
+        """
+        Applies delta actions to agent velocities (linear and angular),
+        with clamping based on environment constraints.
+        """
+        # Assumes action_tensor ∈ [-1, 1]
+        dv_lin = action_tensor[:, 0] * self.dv_lin_max
+        dv_ang = action_tensor[:, 1] * self.dv_ang_max
+
+        # Update velocities with clamping
+        self.agent_vel_lin = (self.agent_vel_lin + dv_lin).clamp(0, self.v_lin_max.item())
+        self.agent_vel_ang = (self.agent_vel_ang + dv_ang).clamp(-self.v_ang_max, self.v_ang_max)
