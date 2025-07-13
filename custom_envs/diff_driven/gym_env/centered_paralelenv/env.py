@@ -114,7 +114,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
         self.score=torch.zeros(self.num_agents, device=device)
         self._init_static_state_part()
-        self.old_mean_hungarian=self.get_mean_hungarian_distance()
+        self.old_hungarian=self.get_hungarian_distances()
 
     def reset_tensor(self, seed: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         self._reset_episode(seed)
@@ -646,17 +646,17 @@ class DiffDriveParallelEnv(ParallelEnv):
         device = self.agent_pos.device
 
         # --- Hungarian assignment (global goal reward) ---
-        new_mean_hungarian=self.get_mean_hungarian_distance()
-        d_goal = -2*(new_mean_hungarian-self.old_mean_hungarian)/self.v_lin_max
+        new_hungarian=self.get_hungarian_distances()
+        d_goal = (self.old_hungarian - new_hungarian)/self.v_lin_max
 
         # Exponential goal reward (tau=1)
-        rewards = d_goal  # ∈ (0, 1]
+        rewards = d_goal
 
         # --- Local stopping reward (if within agent_radius of assigned landmark) ---
-        assigned_landmarks = self.landmarks[self.col_ind].to(device)  # (N, 2)
-        stop_dists = torch.norm(self.agent_pos - assigned_landmarks, dim=1)  # (N,)
-        inside_landmark = stop_dists < self.agent_radius
-        stop_bonus = (1.0 - stop_dists / self.agent_radius) * inside_landmark.float()
+        stop_dist=self.agent_radius+self.v_lin_max
+
+        inside_landmark = new_hungarian < self.agent_radius
+        stop_bonus = (1.0 - new_hungarian / stop_dist) * inside_landmark.float()
         rewards += stop_bonus  # Add local stop bonus
 
         # --- Agent–Agent penalty (within safe_dist) ---
@@ -677,33 +677,28 @@ class DiffDriveParallelEnv(ParallelEnv):
         normed_ob_penalty = torch.clamp(normed_ob_penalty, min=0.0) * ob_mask
         rewards -= self.collision_penalty_scale * normed_ob_penalty.sum(dim=1)
         self.current_rewards = rewards
-        self.old_mean_hungarian=new_mean_hungarian
+        self.old_hungarian=new_hungarian
 
         return rewards
 
-    def get_mean_hungarian_distance(self) -> torch.Tensor:
+    def get_hungarian_distances(self) -> torch.Tensor:
         """
-        Computes the mean distance between agents and their assigned landmarks
-        using the Hungarian algorithm for optimal assignment.
+        Returns the assigned distances between agents and landmarks using the Hungarian algorithm.
+        Output is per-agent (not averaged).
 
         Returns:
-            torch.Tensor: Scalar tensor with the mean assignment distance (on device).
+            torch.Tensor: Shape [num_agents], distances after optimal assignment.
         """
-        N = self._num_agents
-        device = self.agent_pos.device
+        with torch.no_grad():
+            device = self.agent_pos.device
+            agent_pos = self.agent_pos.detach().cpu()
+            landmarks = self.landmarks.detach().cpu()
 
-        # Compute cost matrix on CPU for scipy
-        cost_matrix = torch.cdist(
-            self.agent_pos.detach().cpu(), self.landmarks.detach().cpu()
-        ).numpy()  # shape: (N, N)
+            cost_matrix = torch.cdist(agent_pos, landmarks)  # (N, N)
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            assigned_dists = cost_matrix[row_ind, col_ind]  # shape: (N,)
 
-        row_ind, self.col_ind = linear_sum_assignment(cost_matrix)  # Optimal assignment
-
-        # Gather assigned distances
-        assigned_distances = cost_matrix[row_ind, self.col_ind]  # shape: (N,)
-        mean_distance = torch.tensor(assigned_distances.mean(), dtype=torch.float32, device=device)
-
-        return mean_distance
+            return torch.tensor(assigned_dists, dtype=torch.float32, device=device)
 
 
 class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
