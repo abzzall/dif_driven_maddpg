@@ -11,7 +11,7 @@ render_mode = "human"  # or "none"
 # ====== Environment settings ======
 # Number of agents (should match number of landmarks)
 num_agents = 6
-
+epsilon = 1e-8
 # Number of obstacles (moderate complexity)
 num_obstacles = 4  # 1 obstacle per agent for balanced navigation
 
@@ -42,8 +42,9 @@ dv_ang_max = torch.pi/12        # Max delta angular velocity per step
 sens_range = 5 * v_lin_max  # How far agents can detect obstacles
 
 # ====== Reward settings ======
-collision_penalty_scale = 30.0  # Multiplied by exp(-d) if d < safe_dist
-
+collision_penalty_scale = 10
+reached_goal_scale=100
+velocity_reward_scale=0.05
 # ====== Replay Buffer and Training ======
 replay_buffer_size = 100_000  # Large enough to avoid overfitting, safe for 6GB GPU (store on CPU)
 batch_size = 128               # Optimized for 6GB GPU, adjust if needed

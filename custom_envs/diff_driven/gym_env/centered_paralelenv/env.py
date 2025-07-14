@@ -12,7 +12,7 @@ from config import (
     env_size, num_obstacles, v_lin_max, v_ang_max, dv_lin_max,
     dv_ang_max, agent_radius, safe_dist, sens_range, max_steps,
     obstacle_size_min, obstacle_size_max, collision_penalty_scale,
-    device, normalise
+    device, normalise, epsilon, reached_goal_scale, velocity_reward_scale
 )
 
 
@@ -39,7 +39,8 @@ class DiffDriveParallelEnv(ParallelEnv):
             obstacle_size_max: float = obstacle_size_max,
             collision_penalty_scale: float = collision_penalty_scale,
             device: Union[str, torch.device] = device,
-            normalise=normalise
+            normalise=normalise,
+            reached_goal_scale=reached_goal_scale
     ):
 
         super().__init__()
@@ -63,7 +64,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.agent_radius = torch.tensor(agent_radius, device=device)
         self.safe_dist = torch.tensor(safe_dist, device=device)
         self.sens_range = torch.tensor(sens_range, device=device)
-
+        self.reached_goal_scale=reached_goal_scale
         self.timestep = 0
 
 
@@ -657,7 +658,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         inside_landmark = new_hungarian < self.agent_radius
         stop_bonus = (1.0 - new_hungarian / stop_dist) * inside_landmark.float()
-        rewards += stop_bonus  # Add local stop bonus
+        rewards += stop_bonus*self.reached_goal_scale  # Add local stop bonus
 
         # --- Agent–Agent penalty (within safe_dist) ---
         delta = self.agent_pos.unsqueeze(1) - self.agent_pos.unsqueeze(0)  # (N, N, 2)
