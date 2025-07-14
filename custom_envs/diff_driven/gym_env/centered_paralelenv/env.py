@@ -110,8 +110,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         self._init_landmarks()  # fills self.landmarks
         self.agents = self.possible_agents[:]
         # Reinitialize all entities
-        self._init_agents()  # fills self.agent_pos, self.agent_vel_lin, etc.
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
+        self._init_agents()  # fills self.agent_pos, self.agent_vel_lin, etc.
         self.score=torch.zeros(self.num_agents, device=device)
         self._init_static_state_part()
         self.old_hungarian=self.get_hungarian_distances()
