@@ -727,7 +727,9 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
             obstacle_size_max: float = obstacle_size_max,
             collision_penalty_scale: float = collision_penalty_scale,
             device: Union[str, torch.device] = device,
-            normalise=normalise):
+            normalise=normalise,
+            velocity_reward_scale=velocity_reward_scale
+    ):
         super().__init__(
             num_agents=num_agents,
             obs_low=obs_low,
@@ -754,7 +756,7 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
         else:
             self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*5+self.action_dim
             self.state_dim=5*self.num_agents+2*self.num_landmarks+3*self.num_obstacles
-
+        self.velocity_reward_scale=velocity_reward_scale
 
     def _apply_actions(self, action_tensor: torch.Tensor):
         """
@@ -927,3 +929,26 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
 
         # Combine with static state
         return torch.cat([self.static_state_tensor, ag_state], dim=0).float().to(device)
+
+    def _compute_rewards_tensor(self) -> torch.Tensor:
+        # Get the base rewards from the parent environment (Hungarian, stop bonus, collisions)
+        rewards = super()._compute_rewards_tensor()
+
+        # --- Smoothness incentives ---
+        # Reward faster linear motion
+        # Penalize large angular motion
+
+
+        # Linear velocity reward (encourage moving forward)
+        lin_reward = self.velocity_reward_scale * (self.agent_vel_lin / self.v_lin_max).clamp(0, 1)
+
+        # Angular velocity penalty (discourage sharp turns)
+        ang_penalty = -self.velocity_reward_scale  * (self.agent_vel_ang.abs() / self.v_ang_max).clamp(0, 1)
+
+        # Combine with inherited rewards
+        rewards += lin_reward + ang_penalty
+
+        # Save for debugging/logging if needed
+        self.current_rewards = rewards
+
+        return rewards
