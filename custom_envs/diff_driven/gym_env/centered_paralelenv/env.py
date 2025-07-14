@@ -666,7 +666,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         # --- Agent–Agent penalty (within safe_dist) ---
         delta = self.agent_pos.unsqueeze(1) - self.agent_pos.unsqueeze(0)  # (N, N, 2)
-        dist_matrix = torch.norm(delta, dim=2)  # (N, N)
+        dist_matrix = torch.norm(delta, dim=2) - 2 * self.agent_radius # (N, N)
         aa_mask = (dist_matrix < self.safe_dist) & (~torch.eye(N, dtype=torch.bool, device=device))
         normed_aa_penalty = (self.safe_dist - dist_matrix) / self.safe_dist
         normed_aa_penalty = torch.clamp(normed_aa_penalty, min=0.0) * aa_mask
@@ -676,7 +676,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         ap = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
         ob = self.obstacle_pos.unsqueeze(0)  # (1, M, 2)
         dist_ap_ob = torch.norm(ap - ob, dim=2)  # (N, M)
-        effective_dist = dist_ap_ob - self.obstacle_radius.unsqueeze(0)  # (N, M)
+        effective_dist = dist_ap_ob - self.obstacle_radius.unsqueeze(0)  - self.agent_radius # (N, M)
         ob_mask = effective_dist < self.safe_dist
         normed_ob_penalty = (self.safe_dist - effective_dist) / self.safe_dist
         normed_ob_penalty = torch.clamp(normed_ob_penalty, min=0.0) * ob_mask
