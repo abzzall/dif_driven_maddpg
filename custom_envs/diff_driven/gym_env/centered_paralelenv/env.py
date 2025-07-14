@@ -648,10 +648,14 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         # --- Hungarian assignment (global goal reward) ---
         new_hungarian=self.get_hungarian_distances()
-        d_goal = (self.old_hungarian - new_hungarian)/self.v_lin_max
+        d_goal = -torch.log(1 - (new_hungarian / env_size) + epsilon)
 
         # Exponential goal reward (tau=1)
         rewards = d_goal
+
+        #progressive
+        progressive = (self.old_hungarian - new_hungarian)/self.v_lin_max
+        rewards+=progressive
 
         # --- Local stopping reward (if within agent_radius of assigned landmark) ---
         stop_dist=self.agent_radius+self.v_lin_max
