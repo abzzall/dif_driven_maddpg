@@ -37,7 +37,7 @@ class SimpleActor(nn.Module):
         self.noise_limit = 3.0 * self.std
 
         if hidden_dim is None:
-            hidden_dim = max(128, observation_dim)
+            hidden_dim = max(256, observation_dim)
 
         self.net = nn.Sequential(
             nn.Linear(observation_dim, hidden_dim),
@@ -96,7 +96,7 @@ class SimpleActor(nn.Module):
         torch.save(checkpoint, filename)
         print(f"Checkpoint saved to {filename}")
 
-    def load_checkpoint(self, filepath: str = None, raise_on_no_file: bool = False) -> None:
+    def load_checkpoint(self, filepath: str = None, raise_on_no_file: bool = False, file_prefix:str=None) -> None:
         """
         Loads model and optimizer state from a checkpoint file.
         If the file is not found, behavior depends on raise_on_no_file.
@@ -108,6 +108,9 @@ class SimpleActor(nn.Module):
         """
         if filepath is None:
             filepath = self.chckpnt_file
+
+        if file_prefix is not None:
+                filename = f'{file_prefix}_{filepath}'
 
         if not os.path.isfile(filepath):
             if raise_on_no_file:

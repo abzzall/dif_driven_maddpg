@@ -16,10 +16,10 @@ epsilon = 1e-8
 num_obstacles = 4  # 1 obstacle per agent for balanced navigation
 
 # Environment size (2D continuous space)
-env_size = 100  # Map is 10x10 meters
+env_size = 50  # Map is 100x100 meters
 
 # Episode length
-max_steps = 1000  # Long enough for full behavior to emerge, short enough for stable training
+max_steps = 10_000  # Long enough for full behavior to emerge, short enough for stable training
 
 # ====== Observation, State, Action dimensions ======
 # obs_dim = 78     # Per-agent observation dimension
@@ -34,21 +34,25 @@ act_high = 1.0
 
 # ====== Motion parameters ======
 v_lin_max = 1.0          # Max linear velocity
-v_ang_max = torch.pi/2        # Max angular velocity (degrees)
-dv_lin_max = 0.1 * v_lin_max  # Max delta linear velocity per step
-dv_ang_max = torch.pi/12        # Max delta angular velocity per step
+v_ang_max = torch.pi/9       # Max angular velocity (degrees)
+dv_lin_max =  v_lin_max/4  # Max delta linear velocity per step
+dv_ang_max = v_ang_max/4       # Max delta angular velocity per step
 
-# Sensor range (LIDAR)
-sens_range = 5 * v_lin_max  # How far agents can detect obstacles
 
 # ====== Reward settings ======
-collision_penalty_scale = 10
-reached_goal_scale=100
-velocity_reward_scale=0.05
+collision_penalty_scale = 100
+reached_goal_scale = 100
+base_penalty_scale=10
+distance_penalty_scale = 10   #negative
+velocity_penalty_scale_linear = 0
+velocity_penalty_scale_angular = 0
+time_penalty_scale = 0
+progressive_reward_scale = 0   # Encourage global progress
+
 # ====== Replay Buffer and Training ======
-replay_buffer_size = 100_000  # Large enough to avoid overfitting, safe for 6GB GPU (store on CPU)
+replay_buffer_size = 131_072  # Large enough to avoid overfitting, safe for 6GB GPU (store on CPU)
 batch_size = 128               # Optimized for 6GB GPU, adjust if needed
-start_training_after = 2048 # 1000   # Sooner training for small buffer
+start_training_after = 8192 # 1000   # Sooner training for small buffer
 
 # ====== Network architecture ======
 # hidden_dim_actor = 256      # Sufficient for obs_dim=78, 2-layer ReLU net
@@ -64,13 +68,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # Agent Size and Safety Settings
-agent_radius = v_lin_max
-safe_dist = v_lin_max
+agent_radius = 0.5
+safe_dist = 3
 sens_range = 5 * v_lin_max
 
 
 obstacle_size_min=1
-obstacle_size_max=5
+obstacle_size_max=10
 
 # === Training and Replay ===
 gamma = 0.99                        # Discount factor
@@ -79,7 +83,7 @@ tau = 0.005                         # For soft update of target networks
 
 #n_games
 n_games = 25_000  # Total number of games to train the agents
-train_each=100
+train_each=128
 
 critic_lr: float = 1e-3
 critic_ckpt: str = 'shared_critic.pth'
@@ -91,7 +95,7 @@ normalise=True # normalise the observations and state
 
 
 
-patience = 200                   # Max episodes with no improvement before early stopping
-min_episodes_before_early_stop = 100  # Minimum number of episodes before early stopping is considered
+patience = 256                   # Max episodes with no improvement before early stopping
+min_episodes_before_early_stop = 128  # Minimum number of episodes before early stopping is considered
 
-score_avg_window = 50            # Number of recent episodes to average for performance evaluation
+score_avg_window = 64            # Number of recent episodes to average for performance evaluation

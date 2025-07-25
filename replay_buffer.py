@@ -1,7 +1,7 @@
 import torch
 from typing import Union, Tuple
 from config import (
-    num_agents, replay_buffer_size, device, batch_size, start_training_after
+    num_agents, replay_buffer_size, device, batch_size,
 )
 
 class ReplayBuffer:
@@ -14,7 +14,6 @@ class ReplayBuffer:
             replay_buffer_size: int = replay_buffer_size,  # Max buffer capacity
             device: Union[str, torch.device] = device,  # Device where tensors are stored
             batch_size: int = batch_size,
-            start_training_after:int = start_training_after
     ):
         """
         Initializes a replay buffer for multi-agent off-policy RL.
@@ -40,7 +39,7 @@ class ReplayBuffer:
         self.act_buf = torch.zeros((replay_buffer_size, num_agents, action_dim), dtype=torch.float32)
         self.reward_buf = torch.zeros((replay_buffer_size, num_agents), dtype=torch.float32)
         self.next_obs_buf = torch.zeros((replay_buffer_size, num_agents, obs_dim), dtype=torch.float32)
-        self.done_buf = torch.zeros((replay_buffer_size, num_agents), dtype=torch.float32)
+        self.done_buf = torch.zeros((replay_buffer_size, num_agents), dtype=torch.bool)
         self.state_buf = torch.zeros((replay_buffer_size, state_dim), dtype=torch.float32)
         self.next_state_buf = torch.zeros((replay_buffer_size, state_dim), dtype=torch.float32)
 
@@ -49,7 +48,6 @@ class ReplayBuffer:
         self.max_size = replay_buffer_size
         self.device = torch.device(device)
         self.batch_size = batch_size
-        self.start_training_after=start_training_after
 
     def add(
             self,
@@ -65,7 +63,7 @@ class ReplayBuffer:
         self.act_buf[self.ptr] = actions
         self.reward_buf[self.ptr] = rewards
         self.next_obs_buf[self.ptr] = next_observations
-        self.done_buf[self.ptr] = dones.float()
+        self.done_buf[self.ptr] = dones.bool()
         self.state_buf[self.ptr] = state
         self.next_state_buf[self.ptr] = next_state
 
@@ -120,11 +118,7 @@ class ReplayBuffer:
         self.state_buf[:self.size] = data['state']
         self.next_state_buf[:self.size] = data['next_state']
 
-    def filled(self):
-        return self.size >= self.max_size
 
-    def ready(self):
-        return self.size >= self.start_training_after
 
 
 
