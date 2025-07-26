@@ -447,9 +447,9 @@ class MADDPGBase(ABC):
                 self.replay_buffer.save(f"replay_buffer_{i}.pkl")
                 with open(f'episode_{i}_{checkpoint_path}', "wb") as f:
                     pickle.dump(state_dict, f)
-                self.plot_episode_new_trajectory(episode=i+1)
-                self.plot_episode_new_trajectory(episode=i+2)
-                self.plot_episode_new_trajectory(episode=i+3)
+                self.plot_episode_new_trajectory(episode=f'{i}_1')
+                self.plot_episode_new_trajectory(episode=f'{i}_2')
+                self.plot_episode_new_trajectory(episode=-f'{i}_3')
 
                 print("plotted")
 
