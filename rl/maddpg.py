@@ -591,68 +591,50 @@ class MADDPGSharedActorCritic(MADDPGBase):
 
     def learn(self, buffer=None) -> tuple[None, None] | tuple[float, float]:
         """
-        Performs one training step for both actor and critic using MADDPG.
-
-        Steps:
-            - Samples a batch of experiences from replay buffer.
-            - Computes target Q-values using target critic and target actor.
-            - Computes critic loss and updates critic.
-            - Computes actor loss (policy gradient) and updates actor.
-            - Soft-updates target networks.
-
-        Requires:
-            - Replay buffer must be filled.
-            - All networks and tensors must reside on the same device.
-
-        Shapes:
-            B: Batch size
-            N: Number of agents
-            obs:        [B, N, obs_dim]
-            state:      [B, state_dim]
-            actions:    [B, N, act_dim]
-            rewards:    [B, N]
-            dones:      [B, N]
+        Performs one training step for actor and critic using properly masked joint updates,
+        safely handling newly and long-done agents.
         """
-        #
-        # if not self.replay_buffer.ready():
-        #     print(
-        #         f'memory not ready, current size = {self.replay_buffer.size}/{self.replay_buffer.start_training_after}')
-        #     return None, None
         buffer = buffer or self.replay_buffer
-        obs, next_obs, state, next_state, action, reward, done = self.replay_buffer.sample()
+        obs, next_obs, state, next_state, action, reward, done = buffer.sample()
         B, N, act_dim = action.shape
 
-        # ------------------ Critic Update ----------------------
-        done_all = done.all(dim=1, keepdim=True).float()  # [B, 1], episode done if all agents done
+        # === ACTIVE MASK ===
+        active_mask = (~done).float()  # [B, N]
 
+        # === CRITIC UPDATE ===
         with torch.no_grad():
-            next_action = self.actor_target(next_obs)  # pi'(o')  -> [B, N, act_dim]
-            joint_next_action = next_action.view(B, N * act_dim)  # joint action -> [B, N * act_dim]
-            next_q = self.critic_target(next_state, joint_next_action)  # Q'(s', pi'(o')) -> [B, 1]
-            y = reward.sum(dim=1, keepdim=True) + gamma * next_q * (1 - done_all)  # joint reward + discount
+            next_action = self.actor_target(next_obs)  # [B, N, act_dim]
+            masked_next_action = next_action * active_mask.unsqueeze(-1)  # mask inactive agents
+            joint_next_action = masked_next_action.view(B, N * act_dim)
+
+            next_q = self.critic_target(next_state, joint_next_action)  # [B, 1]
+
+            masked_reward = reward * active_mask  # zero reward for done agents
+            total_reward = masked_reward.sum(dim=1, keepdim=True)  # [B, 1]
+
+            y = total_reward + gamma * next_q  # TD target
 
         joint_action = action.view(B, N * act_dim)
-        q_pred = self.critic(state, joint_action)
+        q_pred = self.critic(state, joint_action)  # [B, 1]
+
         critic_loss = F.mse_loss(q_pred, y)
 
         self.critic.optimizer.zero_grad()
         critic_loss.backward()
         self.critic.optimizer.step()
 
-        # ------------------ Actor Update ----------------------
-        pred_actions = self.actor(obs)  # pi(o) -> [B, N, act_dim]
+        # === ACTOR UPDATE ===
+        pred_actions = self.actor(obs)  # [B, N, act_dim]
+        masked_pred_actions = pred_actions * active_mask.unsqueeze(-1)  # mask inactive agents
+        joint_pred_actions = masked_pred_actions.view(B, N * act_dim)
 
-        # Mask done agents' actions (agents marked done stop learning their actions)
-        masked_actions = pred_actions * (~done).unsqueeze(-1).float()  # [B, N, act_dim]
-
-        joint_pred_actions = masked_actions.view(B, N * act_dim)
         actor_loss = -self.critic(state, joint_pred_actions).mean()
 
         self.actor.optimizer.zero_grad()
         actor_loss.backward()
         self.actor.optimizer.step()
 
-        # ------------------ Target Networks -------------------
+        # === SOFT TARGET UPDATES ===
         self.update_params_vectorized(self.critic, self.critic_target, tau)
         self.update_params_vectorized(self.actor, self.actor_target, tau)
 
