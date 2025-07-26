@@ -6,7 +6,7 @@ from pettingzoo import ParallelEnv
 from custom_envs.diff_driven.gym_env.centered_paralelenv.env import DiffDriveParallelEnv
 from models.simpleactor import SimpleActor
 from models.simplecritic import SharedCritic
-from replay_buffer import ReplayBuffer
+from tagged_replay_buffer import ReplayBuffer
 from abc import ABC, abstractmethod
 import torch.nn.functional as F
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
@@ -376,9 +376,11 @@ class MADDPGBase(ABC):
                 # print(f'chosing action by obs')
                 actions = self.choose_actions(obs)
                 # print(f'taking actions')
-                next_state, next_obs, rewards, done = self.env.step_tensor(actions)
+                next_state, next_obs, rewards, next_done = self.env.step_tensor(actions)
+                tagged = ((~done) & next_done).any().item()
+                done=next_done
                 # print(f'saving rb')
-                self.replay_buffer.add(state, obs, actions, rewards, next_state, next_obs, done)
+                self.replay_buffer.add(state, obs, actions, rewards, next_state, next_obs, done, tagged=tagged)
 
                 state = next_state
                 obs = next_obs
