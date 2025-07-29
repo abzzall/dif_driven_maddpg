@@ -15,10 +15,6 @@ class DiffDriveParallelEnv(ParallelEnv):
     def __init__(
             self,
             num_agents: int = num_agents,
-            obs_low: float = obs_low,
-            obs_high: float = obs_high,
-            act_low: float = act_low,
-            act_high: float = act_high,
             env_size: float = env_size,
             num_obstacles: int = num_obstacles,
             v_lin_max: float = v_lin_max,
@@ -28,15 +24,8 @@ class DiffDriveParallelEnv(ParallelEnv):
             sens_range: float = sens_range,
             obstacle_size_min: float = obstacle_size_min,
             obstacle_size_max: float = obstacle_size_max,
-            collision_penalty_scale: float = collision_penalty_scale,
             device: Union[str, torch.device] = device,
             normalise=normalise,
-            reached_goal_scale=reached_goal_scale,
-            progressive_reward_scale = progressive_reward_scale,
-            distance_penalty_scale = distance_penalty_scale,
-            velocity_penalty_scale_linear=velocity_penalty_scale_linear,
-            velocity_penalty_scale_angular=velocity_penalty_scale_angular,
-            base_penalty_scale=base_penalty_scale
 
 
     ):
@@ -46,12 +35,9 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.device=device
         self.obstacle_size_min=obstacle_size_min
         self.obstacle_size_max=obstacle_size_max
-        self.collision_penalty_scale=collision_penalty_scale
         self._num_agents = num_agents
         self.agents:list[str] = [f"agent_{i}" for i in range(self._num_agents)]
         self.possible_agents = self.agents[:]
-        self.progressive_reward_scale = torch.tensor(progressive_reward_scale, device=device)
-        self.distance_penalty_scale = torch.tensor(distance_penalty_scale, device=device)
         # World settings (converted to CUDA tensors)
         self.env_size = torch.tensor(env_size, device=device)
         self.num_landmarks = self._num_agents
@@ -61,10 +47,6 @@ class DiffDriveParallelEnv(ParallelEnv):
         self.agent_radius = torch.tensor(agent_radius, device=device)
         self.safe_dist = torch.tensor(safe_dist, device=device)
         self.sens_range = torch.tensor(sens_range, device=device)
-        self.reached_goal_scale=reached_goal_scale
-        self.velocity_penalty_scale_angular=torch.tensor(velocity_penalty_scale_angular, device=device)
-        self.velocity_penalty_scale_linear=torch.tensor(velocity_penalty_scale_linear, device=device)
-        self.base_penalty_scale=base_penalty_scale
         self.timestep = 0
 
 
@@ -76,15 +58,6 @@ class DiffDriveParallelEnv(ParallelEnv):
             self.obs_dim=2*self.num_obstacles+2*self.num_landmarks+(self.num_agents-1)*3+self.action_dim
             self.state_dim=3*self.num_agents+2*self.num_landmarks+3*self.num_obstacles
 
-        # Observation and action spaces (remain on CPU)
-        self.observation_spaces = {
-            agent: spaces.Box(low=obs_low, high=obs_high, shape=(self.obs_dim,), dtype=np.float32)
-            for agent in self.agents
-        }
-        self.action_spaces = {
-            agent: spaces.Box(low=act_low, high=act_high, shape=(self.action_dim,), dtype=np.float32)
-            for agent in self.agents
-        }
 
         # Agent states (as tensors)
         self.agent_pos = torch.zeros((self._num_agents, 2), device=device)
@@ -100,7 +73,102 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Rendering
         self.fig = None
         self.ax = None
-        self.score=torch.zeros(self.num_agents, device=device)
+        # self.score=torch.zeros(self.num_agents, device=device)
+
+    def copy(self):
+        # Create a new instance with the same constructor arguments
+        new_env = self.__class__(
+            num_agents=self._num_agents,
+            env_size=float(self.env_size),
+            num_obstacles=self.num_obstacles,
+            v_lin_max=float(self.v_lin_max),
+            v_ang_max=float(self.v_ang_max),
+            agent_radius=float(self.agent_radius),
+            safe_dist=float(self.safe_dist),
+            sens_range=float(self.sens_range),
+            obstacle_size_min=float(self.obstacle_size_min),
+            obstacle_size_max=float(self.obstacle_size_max),
+            device=self.device,
+            normalise=self.normalise,
+        )
+
+        # Clone dynamic tensors
+        new_env.agent_pos = self.agent_pos.clone().detach()
+        new_env.agent_dir = self.agent_dir.clone().detach()
+        new_env.agent_vel_lin = self.agent_vel_lin.clone().detach()
+        new_env.agent_vel_ang = self.agent_vel_ang.clone().detach()
+        new_env.landmarks = self.landmarks.clone().detach()
+        new_env.obstacle_pos = self.obstacle_pos.clone().detach()
+        new_env.obstacle_radius = self.obstacle_radius.clone().detach()
+        new_env.timestep = self.timestep
+
+        # Optionally copy additional attributes if present
+        if hasattr(self, "dv_lin_max"):
+            new_env.dv_lin_max = self.dv_lin_max
+        if hasattr(self, "dv_ang_max"):
+            new_env.dv_ang_max = self.dv_ang_max
+        if hasattr(self, "old_agent_vel_lin"):
+            new_env.old_agent_vel_lin = self.old_agent_vel_lin.clone().detach()
+        if hasattr(self, "old_agent_vel_ang"):
+            new_env.old_agent_vel_ang = self.old_agent_vel_ang.clone().detach()
+        if hasattr(self, "dones"):
+            new_env.dones = self.dones.clone().detach()
+        if hasattr(self, "covered"):
+            new_env.covered = self.covered.clone().detach()
+        if hasattr(self, "old_hungarian"):
+            new_env.old_hungarian = self.old_hungarian.clone().detach()
+        if hasattr(self, "static_state_tensor"):
+            new_env.static_state_tensor = self.static_state_tensor.clone().detach()
+
+        return new_env
+
+    def delete(self):
+        """
+        Explicitly deletes all major tensors and fields to free GPU memory.
+        Should be followed by: del env; torch.cuda.empty_cache()
+        """
+        tensor_attrs = [
+            # Agent state
+            "agent_pos", "agent_dir",
+            "agent_vel_lin", "agent_vel_ang",
+            "old_agent_vel_lin", "old_agent_vel_ang",
+
+            # Environment state
+            "landmarks", "obstacle_pos", "obstacle_radius",
+            "static_state_tensor",
+
+            # DoneAdj extensions
+            "dones", "covered", "old_hungarian", "current_rewards",
+
+            # Graph search fields if retained
+            "last_dir", "prev_inx", "actions", "velocities",
+        ]
+
+        for attr in tensor_attrs:
+            if hasattr(self, attr):
+                val = getattr(self, attr)
+                if isinstance(val, torch.Tensor):
+                    setattr(self, attr, None)
+
+        # Clean up rendering objects
+        if hasattr(self, "fig") and self.fig is not None:
+            import matplotlib.pyplot as plt
+            plt.close(self.fig)
+            self.fig = None
+            self.ax = None
+
+        # Observation/action/state space dictionaries (not on GPU, but large)
+        for attr in ["observation_spaces", "action_spaces"]:
+            if hasattr(self, attr):
+                setattr(self, attr, {})
+
+        # Agent list
+        for attr in ["agents", "possible_agents"]:
+            if hasattr(self, attr):
+                setattr(self, attr, [])
+
+        # Reset timestep
+        self.timestep = 0
 
     def _reset_episode(self, seed: Optional[int] = None) -> None:
         if seed is not None:
@@ -113,9 +181,10 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Reinitialize all entities
         self._init_obstacles()  # fills self.obstacle_pos, self.obstacle_radius
         self._init_agents()  # fills self.agent_pos, self.agent_vel_lin, etc.
-        self.score=torch.zeros(self.num_agents, device=device)
+        # self.score=torch.zeros(self.num_agents, device=device)
         self._init_static_state_part()
         self._reset_hungarian()
+        self.current_score = torch.zeros(self._num_agents, 9, device=device)
 
     def action_to_tensor(self, action):
         return torch.tensor([ 2*action[0]/self.v_lin_max - 1, action/self.v_ang_max])
@@ -188,7 +257,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         # self._handle_collisions()  # modifies self.agent_pos if needed
         self.timestep += 1
         self._compute_rewards_tensor()
-        self.score += self.current_rewards
+        self.current_score += self.current_rewards
 
     def get_all_obs_dict(self) -> Dict[str, np.ndarray]:
         """Returns per-agent observations as a dictionary (CPU numpy arrays)."""
@@ -275,8 +344,8 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         # === 1. Landmarks ===
         lm_dists = torch.norm(self.landmarks, dim=1)
-        lm_order = torch.argsort(lm_dists)
-        lm_sorted = self.landmarks[lm_order]  # shape: [L, 2]
+        self.lm_order = torch.argsort(lm_dists)
+        lm_sorted = self.landmarks[self.lm_order]  # shape: [L, 2]
 
         if normalize:
             lm_sorted = lm_sorted / (self.env_size / 2)  # → [-1, 1]
@@ -292,7 +361,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         if normalize:
             ob_pos_sorted = ob_pos_sorted / (self.env_size / 2)  # → [-1, 1]
             ob_radii_sorted = (ob_radii_sorted - self.obstacle_size_min) / (
-                    self.obstacle_size_max - self.obstacle_size_min + 1e-8
+                    self.obstacle_size_max - self.obstacle_size_min
             )  # → [0, 1]
 
         ob_state = torch.cat([ob_pos_sorted, ob_radii_sorted], dim=1).flatten()  # shape: [3M]
@@ -326,10 +395,10 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         # Sort agents by distance to origin
         ag_dists = torch.norm(self.agent_pos, dim=1)
-        ag_order = torch.argsort(ag_dists)
+        self.ag_order = torch.argsort(ag_dists)
 
-        ag_pos = self.agent_pos[ag_order]  # (N, 2)
-        ag_dir = self.agent_dir[ag_order]  # (N,)
+        ag_pos = self.agent_pos[self.ag_order]  # (N, 2)
+        ag_dir = self.agent_dir[self.ag_order]  # (N,)
 
         if normalize:
             ag_pos = ag_pos / (self.env_size / 2)  # → [-1, 1]
@@ -492,7 +561,7 @@ class DiffDriveParallelEnv(ParallelEnv):
         # Assumes action_tensor ∈ [-1, 1]
         self.old_agent_vel_lin = self.agent_vel_lin.clone().detach()
         self.old_agent_vel_ang = self.agent_vel_ang.clone().detach()
-
+        action_tensor=action_tensor.to(device=self.device)
         active_agents = ~self.get_dones_tensor()  # Boolean mask
 
         # Only update active agents' velocities
@@ -662,7 +731,7 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         return torch.cat(components, dim=0).float().to(device)
 
-    def _compute_rewards_tensor(self, scalar_for_sensitivity=100.0) -> torch.Tensor:
+    def _compute_rewards_tensor(self) -> torch.Tensor:
         """
         Computes rewards for all agents based on:
           - Normalized distance to assigned landmarks (Hungarian matching)
@@ -675,28 +744,32 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         N = self._num_agents
         device = self.device
+        components = torch.zeros(N, 9, device=device)
 
         # --- Hungarian assignment (global goal reward) ---
         new_hungarian=self.get_hungarian_distances()
-        d_global=-self.base_penalty_scale*scalar_for_sensitivity*new_hungarian.mean()/self.env_size
-        d_goal = -self.distance_penalty_scale*scalar_for_sensitivity * new_hungarian/self.env_size
+        d_global=-new_hungarian.mean()/self.env_size
+        d_goal = -new_hungarian/self.env_size
         # d_penalty=-self.distance_penalty_scale* torch.log1p(new_hungarian / self.env_size)
 
 
         # Exponential goal reward (tau=1)
-        rewards = d_goal+d_global
+        # rewards = d_goal+d_global
 
 
-        progressive = self.progressive_reward_scale * scalar_for_sensitivity* (self.old_hungarian - new_hungarian)/self.v_lin_max
-        rewards+=progressive
+        progressive = (self.old_hungarian - new_hungarian)/self.v_lin_max
+        # rewards+=progressive
+        components[0] = progressive  # progressive
+        components[ 1] = d_goal  # dist-to-goal
+        components[ 2] = d_global  # global penalty (shared to all active)
 
         # --- Local stopping reward (if within agent_radius of assigned landmark) ---
         stop_dist=self.agent_radius+self.v_lin_max
 
         inside_landmark = new_hungarian < stop_dist
-        stop_bonus =  inside_landmark.float()*scalar_for_sensitivity*self.reached_goal_scale/new_hungarian.clamp(min=epsilon)
-        rewards += stop_bonus
-
+        stop_bonus =  inside_landmark.float()/new_hungarian.clamp(min=epsilon)
+        # rewards += stop_bonus
+        components[3] = stop_bonus
         # --- Agent–Agent penalty (within safe_dist) ---
         delta = self.agent_pos.unsqueeze(1) - self.agent_pos.unsqueeze(0)  # (N, N, 2)
         dist_matrix = torch.norm(delta, dim=2) - 2 * self.agent_radius  # (N, N)
@@ -704,11 +777,11 @@ class DiffDriveParallelEnv(ParallelEnv):
 
         # Inverse distance penalty, clamped to avoid division by zero
         inv_dist_penalty = torch.zeros_like(dist_matrix)
-        inv_dist_penalty[aa_mask] = scalar_for_sensitivity*self.collision_penalty_scale / dist_matrix[aa_mask].clamp(min=epsilon)
+        inv_dist_penalty[aa_mask] = 1.0 / dist_matrix[aa_mask].clamp(min=epsilon)
 
         penalty = inv_dist_penalty.sum(dim=1)
-        rewards -= penalty
-
+        # rewards -= penalty
+        components[ 4] = -penalty
         # --- Agent–Obstacle penalty (within safe_dist) ---
         ap = self.agent_pos.unsqueeze(1)  # (N, 1, 2)
         ob = self.obstacle_pos.unsqueeze(0)  # (1, M, 2)
@@ -718,23 +791,26 @@ class DiffDriveParallelEnv(ParallelEnv):
         ob_mask = effective_dist < self.safe_dist
 
         inv_dist_penalty = torch.zeros_like(effective_dist)
-        inv_dist_penalty[ob_mask] = scalar_for_sensitivity*self.collision_penalty_scale / effective_dist[ob_mask].clamp(min=epsilon)
+        inv_dist_penalty[ob_mask] = 1.0 / effective_dist[ob_mask].clamp(min=epsilon)
 
         penalty =  inv_dist_penalty.sum(dim=1)
-        rewards -= penalty
+        components[ 5] = -penalty
 
         #_____________________________________VELOCIT REWARD_____________________________
         # Linear velocity reward (encourage moving forward)
-        lin_penalty = -self.velocity_penalty_scale_linear * scalar_for_sensitivity*(1.0 - (self.agent_vel_lin / self.v_lin_max))
+        lin_penalty = -(1.0 - (self.agent_vel_lin / self.v_lin_max))
         # Angular velocity penalty (discourage sharp turns)
-        ang_penalty = -self.velocity_penalty_scale_angular * scalar_for_sensitivity* self.agent_vel_ang.abs() / self.v_ang_max
+        ang_penalty = -self.agent_vel_ang.abs() / self.v_ang_max
 
         # Combine with inherited rewards
-        rewards += lin_penalty + ang_penalty
-        rewards /= scalar_for_sensitivity
-        self.current_rewards = rewards
+        components[6] = lin_penalty
+        components[7] = ang_penalty
+        components[8] = 0
+
+        # rewards /= scalar_for_sensitivity
+        self.current_rewards = components
         self.old_hungarian=new_hungarian
-        return rewards
+        return components
 
     def get_hungarian_distances(self) -> torch.Tensor:
         """
@@ -803,7 +879,7 @@ class DiffDriveParallelEnv(ParallelEnv):
             steps_counts[updates] = cumulative_steps[better]
             dists[updates] = cumulative_dists[better]
             prev_inx[updates] = current_front[batch_idx[better]]
-            last_dir[updates] = headings[batch_idx[better], updates]
+            last_dir[updates] = headings[batch_idx[better], point_idx[better]]
             actions[updates] = torch.stack([step_dists[better], angle_diffs[better]], dim=1)
             visited[updates] = True
 
@@ -821,10 +897,6 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
     def __init__(
             self,
             num_agents: int = num_agents,
-            obs_low: float = obs_low,
-            obs_high: float = obs_high,
-            act_low: float = act_low,
-            act_high: float = act_high,
             env_size: float = env_size,
             num_obstacles: int = num_obstacles,
             v_lin_max: float = v_lin_max,
@@ -836,15 +908,8 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
             sens_range: float = sens_range,
             obstacle_size_min: float = obstacle_size_min,
             obstacle_size_max: float = obstacle_size_max,
-            collision_penalty_scale: float = collision_penalty_scale,
             device: Union[str, torch.device] = device,
             normalise=normalise,
-            reached_goal_scale=reached_goal_scale,
-            progressive_reward_scale=progressive_reward_scale,
-            velocity_penalty_scale_linear=velocity_penalty_scale_linear,
-            velocity_penalty_scale_angular=velocity_penalty_scale_angular,
-            distance_penalty_scale=distance_penalty_scale,
-            base_penalty_scale=base_penalty_scale
 
     ):
         self.dv_lin_max = dv_lin_max
@@ -852,10 +917,6 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
         # self.velocity_reward_scale=velocity_reward_scale
         super().__init__(
             num_agents=num_agents,
-            obs_low=obs_low,
-            obs_high=obs_high,
-            act_low=act_low,
-            act_high=act_high,
             env_size=env_size,
             num_obstacles=num_obstacles,
             v_lin_max=v_lin_max,
@@ -865,16 +926,8 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
             sens_range=sens_range,
             obstacle_size_min=obstacle_size_min,
             obstacle_size_max=obstacle_size_max,
-            collision_penalty_scale=collision_penalty_scale,
             device=device,
             normalise=normalise,
-            reached_goal_scale=reached_goal_scale,
-            progressive_reward_scale=progressive_reward_scale,
-            distance_penalty_scale=distance_penalty_scale,
-            # velocity_reward_scale=velocity_reward_scale,
-            velocity_penalty_scale_linear=velocity_penalty_scale_linear,
-            velocity_penalty_scale_angular=velocity_penalty_scale_angular,
-            base_penalty_scale=base_penalty_scale
         )
 
         if normalise:
@@ -1051,12 +1104,12 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
 
         # Sort agents by distance to origin
         ag_dists = torch.norm(self.agent_pos, dim=1)
-        ag_order = torch.argsort(ag_dists)
+        self.ag_order = torch.argsort(ag_dists)
 
-        ag_pos = self.agent_pos[ag_order]  # (N, 2)
-        ag_dir = self.agent_dir[ag_order]  # (N,)
-        ag_vlin = self.agent_vel_lin[ag_order].unsqueeze(1)  # (N, 1)
-        ag_vang = self.agent_vel_ang[ag_order].unsqueeze(1)  # (N, 1)
+        ag_pos = self.agent_pos[self.ag_order]  # (N, 2)
+        ag_dir = self.agent_dir[self.ag_order]  # (N,)
+        ag_vlin = self.agent_vel_lin[self.ag_order].unsqueeze(1)  # (N, 1)
+        ag_vang = self.agent_vel_ang[self.ag_order].unsqueeze(1)  # (N, 1)
 
         if normalize:
             ag_pos = ag_pos / (self.env_size / 2)  # → [-1, 1]
@@ -1071,29 +1124,6 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
 
         # Combine with static state
         return torch.cat([self.static_state_tensor, ag_state], dim=0).float().to(device)
-
-    # def _compute_rewards_tensor(self) -> torch.Tensor:
-    #     # Get the base rewards from the parent environment (Hungarian, stop bonus, collisions)
-    #     rewards = super()._compute_rewards_tensor()
-    #
-    #     # --- Smoothness incentives ---
-    #     # Reward faster linear motion
-    #     # Penalize large angular motion
-    #
-    #
-    #     # Linear velocity reward (encourage moving forward)
-    #     lin_penalty = -self.velocity_reward_scale * (1.0 - (self.agent_vel_lin / self.v_lin_max).clamp(0, 1))
-    #
-    #     # Angular velocity penalty (discourage sharp turns)
-    #     ang_penalty = -self.velocity_reward_scale  * (self.agent_vel_ang.abs() / self.v_ang_max).clamp(0, 1)
-    #
-    #     # Combine with inherited rewards
-    #     rewards += lin_penalty + ang_penalty
-    #
-    #     # Save for debugging/logging if needed
-    #     self.current_rewards = rewards
-    #
-    #     return rewards
 
     def _reset_episode(self, seed: Optional[int] = None) -> None:
         super()._reset_episode(seed)
@@ -1190,10 +1220,6 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
     def __init__(
             self,
             num_agents: int = num_agents,
-            obs_low: float = obs_low,
-            obs_high: float = obs_high,
-            act_low: float = act_low,
-            act_high: float = act_high,
             env_size: float = env_size,
             num_obstacles: int = num_obstacles,
             v_lin_max: float = v_lin_max,
@@ -1203,25 +1229,12 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
             sens_range: float = sens_range,
             obstacle_size_min: float = obstacle_size_min,
             obstacle_size_max: float = obstacle_size_max,
-            collision_penalty_scale: float = collision_penalty_scale,
             device: Union[str, torch.device] = device,
             normalise=normalise,
-            reached_goal_scale=reached_goal_scale,
-            progressive_reward_scale=progressive_reward_scale,
-            distance_penalty_scale=distance_penalty_scale,
-        # velocity_reward_scale = velocity_penalty_scale,
-            velocity_penalty_scale_linear=velocity_penalty_scale_linear,
-            velocity_penalty_scale_angular=velocity_penalty_scale_angular,
-            time_penalty_scale=time_penalty_scale,
-            base_penalty_scale=base_penalty_scale
 
     ):
         super().__init__(
             num_agents=num_agents,
-            obs_low=obs_low,
-            obs_high=obs_high,
-            act_low=act_low,
-            act_high=act_high,
             env_size=env_size,
             num_obstacles=num_obstacles,
             v_lin_max=v_lin_max,
@@ -1231,20 +1244,11 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
             sens_range=sens_range,
             obstacle_size_min=obstacle_size_min,
             obstacle_size_max=obstacle_size_max,
-            collision_penalty_scale=collision_penalty_scale,
             device=device,
             normalise=normalise,
-            reached_goal_scale=reached_goal_scale,
-            progressive_reward_scale=progressive_reward_scale,
-            distance_penalty_scale=distance_penalty_scale,
-            # velocity_reward_scale=velocity_reward_scale,
-            velocity_penalty_scale_linear=velocity_penalty_scale_linear,
-            velocity_penalty_scale_angular=velocity_penalty_scale_angular,
-            base_penalty_scale=base_penalty_scale
 
 
         )
-        self.time_penalty_scale= torch.tensor(time_penalty_scale, device=device, dtype=torch.float32)
         if normalise:
             self.obs_dim = 3 * self.num_obstacles + 3 * self.num_landmarks + (self.num_agents - 1) * 5+1
             self.state_dim = 5 * self.num_agents + 3 * self.num_landmarks + 3 * self.num_obstacles
@@ -1286,17 +1290,112 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
 
         # Combine with static state
         device = self.device
+        super_state=super().state_tensor()
         return torch.cat([
-            super().state_tensor(),
-            self.dones.to(device).float(),
-            self.covered.to(device).float()
+            super_state,
+            self.dones[self.ag_order].to(device).float(),
+            self.covered[self.lm_order].to(device).float()
         ], dim=0).float().to(device)
 
     def get_observation(self, idx: int) -> torch.Tensor:
-        return torch.cat([super().get_observation(idx),
-                         self.dones.to(device).float(),
-                         self.covered.to(device).float() ]).float().to(device)
-    def _compute_rewards_tensor(self, scalar_for_sensitivity=100.0) -> torch.Tensor:
+        device = self.device
+        normalize = self.normalise
+
+        pos = self.agent_pos[idx].to(device)  # (2,)
+        heading = self.agent_dir[idx].to(device)
+
+        cos_h = torch.cos(heading)
+        sin_h = torch.sin(heading)
+        rot = torch.stack([
+            torch.stack([cos_h, sin_h]),
+            torch.stack([-sin_h, cos_h])
+        ])  # (2, 2)
+
+        # Other agents
+        mask = torch.arange(self._num_agents, device=device) != idx
+        other_pos = self.agent_pos[mask]
+        rel_pos_global = other_pos - pos
+        dist_to_agents = torch.norm(rel_pos_global, dim=1)
+        sorted_idx = torch.argsort(dist_to_agents)
+
+        rel_pos = (rel_pos_global[sorted_idx]) @ rot.T
+        rel_dir = self.agent_dir[mask][sorted_idx] - heading
+        rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
+
+        if normalize:
+            rel_pos = rel_pos / self.env_size
+            rel_dir_sin = torch.sin(rel_dir).unsqueeze(1)
+            rel_dir_cos = torch.cos(rel_dir).unsqueeze(1)
+        else:
+            rel_dir = rel_dir.unsqueeze(1)
+        dones=self.dones[mask][sorted_idx]
+
+        # Landmarks
+        rel_lm_global = self.landmarks - pos
+        dist_to_lm = torch.norm(rel_lm_global, dim=1)
+        sorted_lm_idx = torch.argsort(dist_to_lm)
+
+        rel_lm = (rel_lm_global[sorted_lm_idx]) @ rot.T
+        if normalize:
+            rel_lm = rel_lm / self.env_size
+        covered=self.covered[sorted_lm_idx]
+
+        # Obstacles
+        obs_vec = self.obstacle_pos - pos
+        center_dists = torch.norm(obs_vec, dim=1)
+        edge_dists = center_dists - self.obstacle_radius
+        in_range = edge_dists < self.sens_range
+        obs_idx = torch.argsort(edge_dists)
+        obs_idx = obs_idx[in_range[obs_idx]]
+
+        edge_dists = edge_dists[obs_idx]
+        if normalize:
+            edge_dists = edge_dists / self.sens_range
+
+        obs_vec_local = obs_vec[obs_idx] @ rot.T
+        obs_angles = torch.atan2(obs_vec_local[:, 1], obs_vec_local[:, 0])
+
+        if normalize:
+            obs_angle_sin = torch.sin(obs_angles)
+            obs_angle_cos = torch.cos(obs_angles)
+
+        # Pad obstacles
+        pad_len = self.num_obstacles - len(obs_idx)
+
+        def pad(x, value=0):
+            if pad_len > 0:
+                return torch.cat([x, torch.full((pad_len,), value, device=device)], dim=0)
+            return x
+
+        edge_dists = pad(edge_dists)
+        if normalize:
+            obs_angle_sin = pad(obs_angle_sin)
+            obs_angle_cos = pad(obs_angle_cos)
+        else:
+            obs_angles = pad(obs_angles)
+
+        # Final concat
+        components = [rel_pos.flatten(), dones.flatten(), self.dones[idx].unsqueeze(0)]
+
+        if normalize:
+            components.extend([rel_dir_sin.flatten(), rel_dir_cos.flatten()])
+        else:
+            components.append(rel_dir.flatten())
+
+        components.extend([
+            rel_lm.flatten(),
+            covered,
+            edge_dists,
+        ])
+
+        if normalize:
+            components.extend([obs_angle_sin, obs_angle_cos])
+        else:
+            components.append(obs_angles)
+
+        return torch.cat(components, dim=0).float().to(device)
+
+    def _compute_rewards_tensor(self) -> torch.Tensor:
         """
         Computes rewards for all agents:
           - Global progress via Hungarian assignment (active agents only)
@@ -1316,7 +1415,8 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
         """
         N = self._num_agents
         device = self.device
-        rewards = torch.zeros(N, device=device)
+        # rewards = torch.zeros(N, device=device)
+        components = torch.zeros(N, 9, device=device)
 
         active_agents = ~self.dones
         active_indices = active_agents.nonzero(as_tuple=True)[0]
@@ -1325,17 +1425,22 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
         # ---------- Global Goal Reward (Hungarian) ----------
         new_hungarian, covered_agent_indices, covered_landmark_indices = self.get_hungarian_distances()
 
-        d_global = -scalar_for_sensitivity*self.base_penalty_scale*(new_hungarian.sum()/(self.env_size*self.num_agents))
-        d_goal = -scalar_for_sensitivity * self.distance_penalty_scale * (new_hungarian / self.env_size)
+        d_global = -(new_hungarian.sum()/(self.env_size*self.num_agents))
+        d_goal =  -(new_hungarian / self.env_size)
         d_goal = torch.nan_to_num(d_goal, nan=0.0)
 
-        progressive = scalar_for_sensitivity*self.progressive_reward_scale* torch.nan_to_num(
+        progressive =  torch.nan_to_num(
             (self.old_hungarian - new_hungarian) / self.v_lin_max, nan=0.0)
 
-        rewards[active_agents] =  progressive[active_agents]+d_global+d_goal[active_agents]
+        # rewards[active_agents] =  progressive[active_agents]+d_global+d_goal[active_agents]
+        components[active_agents, 0] = progressive[active_agents]  # progressive
+        components[active_agents, 1] = d_goal[active_agents]  # dist-to-goal
+        components[active_agents, 2] = d_global  # global penalty (shared to all active)
 
         # ---------- Reward for Newly Covered Landmarks ----------
-        rewards[covered_agent_indices] += scalar_for_sensitivity*self.reached_goal_scale
+        # rewards[covered_agent_indices] += scalar_for_sensitivity*self.reached_goal_scale
+        # components[covered_agent_indices, 3] = 1
+        components[active_agents, 3] = 1.0/(1+ 50*torch.exp(new_hungarian[active_agents]-agent_radius))
         # self.dones[covered_agent_indices] = True
         self.covered[covered_landmark_indices] = True
 
@@ -1350,11 +1455,11 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
 
             # Inverse distance penalty (avoid division by zero)
             inv_dist_penalty = torch.zeros_like(dist_matrix)
-            inv_dist_penalty[aa_mask] = scalar_for_sensitivity*self.collision_penalty_scale * (1-(dist_matrix[aa_mask]/self.safe_dist))
-
+            # inv_dist_penalty[aa_mask] =  1-(dist_matrix[aa_mask]/self.safe_dist)
+            inv_dist_penalty[aa_mask] = 1.0/(dist_matrix[aa_mask]+0.01)
             penalty = inv_dist_penalty.sum(dim=1)
-            rewards[active_agents] -= penalty
-
+            # rewards[active_agents] -= penalty
+            components[active_agents, 4] = -penalty
         # ---------- Active-Agent vs Obstacles & Done-Agents Penalty ----------
         done_agent_pos = self.agent_pos[self.dones]  # Done agents as static obstacles
         num_done = int(done_agent_pos.shape[0])
@@ -1375,32 +1480,35 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
 
         # Inverse distance penalty for obstacles
         inv_dist_penalty = torch.zeros_like(effective_dist)
-        inv_dist_penalty[ob_mask] = scalar_for_sensitivity *self.collision_penalty_scale *(1-(effective_dist[ob_mask]/self.safe_dist))
+        # inv_dist_penalty[ob_mask] = 1-(effective_dist[ob_mask]/self.safe_dist)
+        inv_dist_penalty[ob_mask]=1.0/(effective_dist[ob_mask]+0.01)
 
         penalty =  inv_dist_penalty.sum(dim=1)
-        rewards[active_agents] -= penalty
-
+        # rewards[active_agents] -= penalty
+        components[active_agents, 5] = -penalty
         #______________________________Velocity Reward__________________________________________________
         # --- Smoothness incentives for active agents only ---
         # Linear velocity reward (encourage moving forward)
-        lin_penalty =torch.zeros_like(rewards)
-        ang_penalty =torch.zeros_like(rewards)
-        lin_penalty[active_agents] = -self.velocity_penalty_scale_linear*scalar_for_sensitivity * (1.0 - (self.agent_vel_lin[active_agents] / self.v_lin_max))
+        # lin_penalty =torch.zeros_like(rewards)
+        # ang_penalty =torch.zeros_like(rewards)
+        lin_penalty = -1.0 - (self.agent_vel_lin[active_agents] / self.v_lin_max)
         # Angular velocity penalty (discourage sharp turns)
-        ang_penalty[active_agents] = -self.velocity_penalty_scale_angular * scalar_for_sensitivity * self.agent_vel_ang[active_agents].abs() / self.v_ang_max
+        ang_penalty = - self.agent_vel_ang[active_agents].abs() / self.v_ang_max
 
-        rewards[active_agents]+=lin_penalty[active_agents]+ang_penalty[active_agents]
+        # rewards[active_agents]+=lin_penalty[active_agents]+ang_penalty[active_agents]
+        components[active_agents, 6] = lin_penalty
+        components[active_agents, 7] = ang_penalty
         #------------------------------------Time penalty-------------------------------------------------------
-        rewards[active_agents] += -scalar_for_sensitivity * self.time_penalty_scale
-
+        # rewards[active_agents] += -scalar_for_sensitivity * self.time_penalty_scale
+        components[active_agents, 8] = -1
 
 
         # ---------- Finalize ----------
-        rewards=rewards/scalar_for_sensitivity
-        self.current_rewards = rewards
+        # rewards=rewards/scalar_for_sensitivity
+        self.current_rewards = components #rewards
         self.old_hungarian = new_hungarian
         self.terminate_agents(covered_agent_indices)
-        return rewards
+        return components
 
     def terminate_agents(self, indices):
         self.dones[indices] = True
@@ -1454,15 +1562,10 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
                 covered_landmark_indices.to(device)
             )
 
-
 class DiffDriveParallelEnvDoneAdj(DiffDriveParallelEnvDone, DiffDriveParallelEnvAdj):
     def __init__(
             self,
             num_agents: int = num_agents,
-            obs_low: float = obs_low,
-            obs_high: float = obs_high,
-            act_low: float = act_low,
-            act_high: float = act_high,
             env_size: float = env_size,
             num_obstacles: int = num_obstacles,
             v_lin_max: float = v_lin_max,
@@ -1474,25 +1577,13 @@ class DiffDriveParallelEnvDoneAdj(DiffDriveParallelEnvDone, DiffDriveParallelEnv
             sens_range: float = sens_range,
             obstacle_size_min: float = obstacle_size_min,
             obstacle_size_max: float = obstacle_size_max,
-            collision_penalty_scale: float = collision_penalty_scale,
             device: Union[str, torch.device] = device,
             normalise=normalise,
-            # velocity_reward_scale=velocity_penalty_scale,
-            reached_goal_scale=reached_goal_scale,
-            progressive_reward_scale=progressive_reward_scale,
-            distance_penalty_scale=distance_penalty_scale,
-            time_penalty_scale=time_penalty_scale,
-            velocity_penalty_scale_linear=velocity_penalty_scale_linear,
-            velocity_penalty_scale_angular=velocity_penalty_scale_angular,
-            base_penalty_scale=base_penalty_scale
+
 
     ):
         DiffDriveParallelEnvAdj.__init__(self,
             num_agents=num_agents,
-            obs_low=obs_low,
-            obs_high=obs_high,
-            act_low=act_low,
-            act_high=act_high,
             env_size=env_size,
             num_obstacles=num_obstacles,
             v_lin_max=v_lin_max,
@@ -1502,18 +1593,11 @@ class DiffDriveParallelEnvDoneAdj(DiffDriveParallelEnvDone, DiffDriveParallelEnv
             sens_range=sens_range,
             obstacle_size_min=obstacle_size_min,
             obstacle_size_max=obstacle_size_max,
-            collision_penalty_scale=collision_penalty_scale,
             device=device,
             normalise=normalise,
-            reached_goal_scale=reached_goal_scale,
             dv_lin_max=dv_lin_max,
             dv_ang_max=dv_ang_max,
-            # velocity_reward_scale=velocity_reward_scale,
-            progressive_reward_scale=progressive_reward_scale,
-            distance_penalty_scale=distance_penalty_scale,
-            velocity_penalty_scale_linear=velocity_penalty_scale_linear,
-            velocity_penalty_scale_angular=velocity_penalty_scale_angular,
-                                         base_penalty_scale=base_penalty_scale
+
         )
         if normalise:
             self.obs_dim = 3 * self.num_obstacles + 3 * self.num_landmarks + (self.num_agents - 1) * 7 + self.action_dim + 1
@@ -1521,5 +1605,121 @@ class DiffDriveParallelEnvDoneAdj(DiffDriveParallelEnvDone, DiffDriveParallelEnv
         else:
             self.obs_dim=2*self.num_obstacles+3*self.num_landmarks+(self.num_agents-1)*6+self.action_dim+1
             self.state_dim=6*self.num_agents+3*self.num_landmarks+3*self.num_obstacles
-        self.time_penalty_scale= torch.tensor(time_penalty_scale, device=device, dtype=torch.float32)
 
+    def get_observation(self, idx: int) -> torch.Tensor:
+        device = self.device
+        normalize = self.normalise
+
+        pos = self.agent_pos[idx].to(device)  # (2,)
+        heading = self.agent_dir[idx].to(device)
+
+        cos_h = torch.cos(heading)
+        sin_h = torch.sin(heading)
+        rot = torch.stack([
+            torch.stack([cos_h, sin_h]),
+            torch.stack([-sin_h, cos_h])
+        ])  # (2, 2)
+
+        # Own motion
+        own_lin = self.agent_vel_lin[idx].unsqueeze(0).to(device)
+        own_ang = self.agent_vel_ang[idx].unsqueeze(0).to(device)
+        if normalize:
+            own_lin = own_lin / self.v_lin_max
+            own_ang = own_ang / self.v_ang_max
+
+        # Other agents
+        mask = torch.arange(self._num_agents, device=device) != idx
+        other_pos = self.agent_pos[mask]
+        rel_pos_global = other_pos - pos
+        dist_to_agents = torch.norm(rel_pos_global, dim=1)
+        sorted_idx = torch.argsort(dist_to_agents)
+
+        rel_pos = (rel_pos_global[sorted_idx]) @ rot.T
+        rel_dir = self.agent_dir[mask][sorted_idx] - heading
+        rel_dir = torch.atan2(torch.sin(rel_dir), torch.cos(rel_dir))
+
+        if normalize:
+            rel_pos = rel_pos / self.env_size
+            rel_dir_sin = torch.sin(rel_dir).unsqueeze(1)
+            rel_dir_cos = torch.cos(rel_dir).unsqueeze(1)
+        else:
+            rel_dir = rel_dir.unsqueeze(1)
+
+        lin_vels = self.agent_vel_lin[mask][sorted_idx].unsqueeze(1).to(device)
+        ang_vels = self.agent_vel_ang[mask][sorted_idx].unsqueeze(1).to(device)
+        if normalize:
+            lin_vels = lin_vels / self.v_lin_max
+            ang_vels = ang_vels / self.v_ang_max
+        dones=self.dones[mask][sorted_idx]
+
+        # Landmarks
+        rel_lm_global = self.landmarks - pos
+        dist_to_lm = torch.norm(rel_lm_global, dim=1)
+        sorted_lm_idx = torch.argsort(dist_to_lm)
+
+        rel_lm = (rel_lm_global[sorted_lm_idx]) @ rot.T
+        if normalize:
+            rel_lm = rel_lm / self.env_size
+        covered=self.covered[sorted_lm_idx]
+
+        # Obstacles
+        obs_vec = self.obstacle_pos - pos
+        center_dists = torch.norm(obs_vec, dim=1)
+        edge_dists = center_dists - self.obstacle_radius
+        in_range = edge_dists < self.sens_range
+        obs_idx = torch.argsort(edge_dists)
+        obs_idx = obs_idx[in_range[obs_idx]]
+
+        edge_dists = edge_dists[obs_idx]
+        if normalize:
+            edge_dists = edge_dists / self.sens_range
+
+        obs_vec_local = obs_vec[obs_idx] @ rot.T
+        obs_angles = torch.atan2(obs_vec_local[:, 1], obs_vec_local[:, 0])
+
+        if normalize:
+            obs_angle_sin = torch.sin(obs_angles)
+            obs_angle_cos = torch.cos(obs_angles)
+
+        # Pad obstacles
+        pad_len = self.num_obstacles - len(obs_idx)
+
+        def pad(x, value=0):
+            if pad_len > 0:
+                return torch.cat([x, torch.full((pad_len,), value, device=device)], dim=0)
+            return x
+
+        edge_dists = pad(edge_dists)
+        if normalize:
+            obs_angle_sin = pad(obs_angle_sin)
+            obs_angle_cos = pad(obs_angle_cos)
+        else:
+            obs_angles = pad(obs_angles)
+
+        # Final concat
+        components = [
+            own_lin, own_ang,
+            rel_pos.flatten(),
+            self.dones[idx].unsqueeze(0)
+        ]
+
+        if normalize:
+            components.extend([rel_dir_sin.flatten(), rel_dir_cos.flatten()])
+        else:
+            components.append(rel_dir.flatten())
+
+        components.extend([
+            lin_vels.flatten(),
+            ang_vels.flatten(),
+            dones,
+            rel_lm.flatten(),
+            covered,
+            edge_dists,
+        ])
+
+        if normalize:
+            components.extend([obs_angle_sin, obs_angle_cos])
+        else:
+            components.append(obs_angles)
+
+        return torch.cat(components, dim=0).float().to(device)

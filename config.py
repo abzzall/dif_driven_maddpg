@@ -16,7 +16,7 @@ epsilon = 1e-8
 num_obstacles = 4  # 1 obstacle per agent for balanced navigation
 
 # Environment size (2D continuous space)
-env_size = 50  # Map is 100x100 meters
+env_size = 100  # Map is 100x100 meters
 
 # Episode length
 max_steps = 10_000  # Long enough for full behavior to emerge, short enough for stable training
@@ -69,12 +69,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Agent Size and Safety Settings
 agent_radius = 0.5
-safe_dist = 3
+safe_dist = v_lin_max
 sens_range = 5 * v_lin_max
 
 
 obstacle_size_min=1
-obstacle_size_max=10
+obstacle_size_max=20
 
 # === Training and Replay ===
 gamma = 0.99                        # Discount factor
