@@ -10,9 +10,8 @@ from typing import Optional, Type
 class SharedCritic(nn.Module):
     def __init__(
             self,
-            state_dim: int,
-            action_dim: int,
-            n_agents: int,
+            input_dim: int,
+            output_dim: int,
             hidden_dim: Optional[int] = None,
             activation: Type[nn.Module] = nn.ReLU,
             device: str = device,
@@ -22,7 +21,7 @@ class SharedCritic(nn.Module):
 
         super().__init__()
         self.device = torch.device(device)
-        input_dim = state_dim + n_agents * action_dim
+        # input_dim = state_dim + n_agents * action_dim
 
         if hidden_dim is None:
             hidden_dim = max(128, input_dim)
@@ -33,7 +32,7 @@ class SharedCritic(nn.Module):
             activation(),
             nn.Linear(hidden_dim, hidden_dim),
             activation(),
-            nn.Linear(hidden_dim, n_agents)  # per-agent Q-values
+            nn.Linear(hidden_dim, output_dim)  # per-agent Q-values
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
