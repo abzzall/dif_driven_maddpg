@@ -13,13 +13,13 @@ render_mode = "human"  # or "none"
 num_agents = 6
 epsilon = 1e-8
 # Number of obstacles (moderate complexity)
-num_obstacles = 4  # 1 obstacle per agent for balanced navigation
+num_obstacles = 0  # 1 obstacle per agent for balanced navigation
 
 # Environment size (2D continuous space)
-env_size = 100  # Map is 100x100 meters
+env_size = 20  # Map is 100x100 meters
 
 # Episode length
-max_steps = 10_000  # Long enough for full behavior to emerge, short enough for stable training
+max_steps = 500  # Long enough for full behavior to emerge, short enough for stable training
 
 # ====== Observation, State, Action dimensions ======
 # obs_dim = 78     # Per-agent observation dimension
@@ -74,7 +74,7 @@ sens_range = 5 * v_lin_max
 
 
 obstacle_size_min=1
-obstacle_size_max=20
+obstacle_size_max=2
 
 # === Training and Replay ===
 gamma = 0.99                        # Discount factor
