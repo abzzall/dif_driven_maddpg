@@ -70,3 +70,17 @@ revision_logs_round3/
 !README.md
 !docs/*.md
 /res/supplementary/
+
+# Manuscript sources, review material and run outputs (kept locally, not published)
+/paper_revision2/
+/paper_editor_text_revision/
+/review_round1_runs/
+/submission_package_*/
+/docs/ROUND1_INDEPENDENT_AUDIT.md
+/.agents/
+/.codex/
+
+# Scratch notebooks
+/main.ipynb
+/tst.ipynb
+/par_env_test.ipynb

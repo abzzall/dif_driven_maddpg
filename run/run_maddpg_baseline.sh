@@ -21,7 +21,7 @@
 # and to measure wall-clock, before launching all 9:
 #
 #   cd $REPO
-#   source .venvLin/bin/activate && export PYTHONPATH=$(pwd)
+#   source .venv/bin/activate && export PYTHONPATH=$(pwd)
 #   python run/train_seeded.py --algorithm maddpg --n 4 --mode full --seed 1 \
 #     --episodes 1000 --v_ang_max pi2 --use_offline_replay \
 #     --disable_episode_offload \

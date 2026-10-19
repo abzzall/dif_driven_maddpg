@@ -77,7 +77,7 @@ wait
 echo "[$(date +%T)] rerun finished. CSVs in $OUT_ROOT/eval/"
 echo
 echo "Next — re-aggregate (now 30/30) and rebuild the notebook:"
-echo "  cd $REPO && export PYTHONPATH=\$PWD && source .venvLin/bin/activate"
+echo "  cd $REPO && export PYTHONPATH=\$PWD && source .venv/bin/activate"
 echo "  python tools/aggregate_eval.py --eval_dir $OUT_ROOT/eval --out_dir revision_logs_mappo/eval"
 echo "  python tools/create_round2_notebook.py"
 echo "  jupyter nbconvert --to notebook --execute --inplace res/round2_revision_results.ipynb"
