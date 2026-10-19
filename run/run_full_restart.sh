@@ -12,15 +12,15 @@
 #     sweeps are preserved.
 #
 # Usage:
-#   bash run_full_restart.sh
-#   nohup bash run_full_restart.sh &
+#   bash run/run_full_restart.sh
+#   nohup bash run/run_full_restart.sh &
 #
 # Override anything by exporting before invocation:
-#   SEEDS="1 2" bash run_full_restart.sh
-#   PARALLEL=2 bash run_full_restart.sh
+#   SEEDS="1 2" bash run/run_full_restart.sh
+#   PARALLEL=2 bash run/run_full_restart.sh
 
 set -uo pipefail
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # --- Defaults (overridable via env) ---
@@ -72,8 +72,8 @@ echo "============================================================"
 } | tee -a "$MASTER_LOG"
 
 # --- Pre-flight checks ---
-if [ ! -f "$REPO_ROOT/.venvLin/bin/activate" ]; then
-    echo "ERROR: .venvLin not found at $REPO_ROOT/.venvLin" | tee -a "$MASTER_LOG"
+if [ ! -f "${VENV:-$REPO_ROOT/.venv}/bin/activate" ]; then
+    echo "ERROR: virtualenv not found at ${VENV:-$REPO_ROOT/.venv} (set VENV)" | tee -a "$MASTER_LOG"
     exit 1
 fi
 if [ ! -d "$OFFLOAD_ROOT" ] && ! mkdir -p "$OFFLOAD_ROOT" 2>/dev/null; then

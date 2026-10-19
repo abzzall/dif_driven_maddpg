@@ -1,16 +1,40 @@
-Copyright (c) 2026 Abzal E. Kyzyrkanov
+Copyright (c) 2025-2026 Abzal E. Kyzyrkanov and co-authors
 
 This work (source code and accompanying materials) is licensed under the
 Creative Commons Attribution-NonCommercial 4.0 International License
-(CC BY-NC 4.0).
+(CC BY-NC 4.0). The full legal text follows below.
 
-You are free to use, share, and adapt this material for NON-COMMERCIAL
-purposes, provided you give appropriate credit by citing the associated
-publications (see README.md, "Citation" section). Commercial use requires
-separate written permission from the copyright holder.
+CITATION REQUIREMENT
+--------------------
+Attribution under Section 3(a) of this license means citing the publications
+below. Any use of this work, or of material adapted from it, in research,
+teaching, software or any publication (papers, theses, reports, preprints,
+software documentation) must cite the publication(s) relevant to the parts
+used; if in doubt, cite all three:
+
+  [1] Amirgaliyeva, S., Kyzyrkanov, A. E., Yedilkhan, D., Turgunov, B.,
+      Merembayev, T., & Narynov, S. (2026). Reliable Learning-Enabled
+      Multi-Robot Coverage with Masked Entity-Attention MAPPO: A Controlled
+      Multi-Seed Study. AI, 7(10), 411. https://doi.org/10.3390/ai7100411
+
+  [2] Kyzyrkanov, A. E., Yedilkhan, D., Amirgaliyeva, S., & Narynov, S.
+      (2026). Decentralized Shared Actor-Critic Learning for Collision-Aware
+      Small-Team Multi-Robot Coverage. Robotics, 15(7), 119.
+      https://doi.org/10.3390/robotics15070119
+
+  [3] Kyzyrkanov, A., Otarbay, Z., Yedilkhan, D., & Amirgaliyev, B. (2026).
+      Adaptive Replay Strategies Stabilize Multi-Agent Reinforcement Learning
+      for Differential-Drive Robot Coordination. Journal of Robotics and
+      Control (JRC), 6(6), 3068-3087. https://doi.org/10.18196/jrc.v6i6.28387
+
+BibTeX entries are in README.md ("Citation") and CITATION.cff.
+
+You are free to use, share and adapt this material for NON-COMMERCIAL
+purposes, provided you cite the publications above and indicate if changes
+were made. Commercial use requires separate written permission from the
+copyright holder (abzzall@gmail.com).
 
 Human-readable summary: https://creativecommons.org/licenses/by-nc/4.0/
-Full legal text below.
 
 =======================================================================
 

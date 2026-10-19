@@ -29,8 +29,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Activate the canonical Linux venv
-source "$REPO_ROOT/.venvLin/bin/activate"
+# Activate the virtualenv (override with VENV=/path/to/venv)
+source "${VENV:-$REPO_ROOT/.venv}/bin/activate"
 export PYTHONPATH="$REPO_ROOT"
 
 PARALLEL="${PARALLEL:-3}"   # training tasks in parallel; offload runs as an independent +1 worker

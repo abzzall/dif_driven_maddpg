@@ -7,7 +7,7 @@ override with an environment variable. This page lists them.
 ## Repository root
 
 Shell scripts under `run/` and `tools/` auto-detect the repo from their own
-location:
+location (the AI-study launchers call the same variable `PROJ`):
 
 ```bash
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -38,6 +38,10 @@ archive.
 | `OUT_ROOT` | evaluation scripts | `$HOME/Desktop/..._eval` | Evaluation output |
 | `REVISION_ROOT` | `res/revision_final_results.ipynb` | repo `revision_logs/` if present | Data root for the results notebook |
 | `LEGACY_LOG_ROOT` | `tools/compare_*.py`, `tools/sweep_*.py` | `$HOME/dif_driven_archive` | Legacy reference logs for diagnostics |
+| `PROJ` | AI-study launchers (`run/run_ppo_*.sh`, `run/run_r2_*.sh`, ...) | auto-detected | Repository root (same role as `REPO`) |
+| `PPO_STUDY_ROOT` | AI-study launchers, `run/eval_*.py`, `tools/aggregate_heldout.py`, `tools/create_ppo_study_notebook.py`, `res/ppo_study_results.ipynb` | `$HOME/dif_driven_ppo_study` | Runs, logs, evaluation CSVs and figures of the entity-attention MAPPO study |
+| `ROOT` | individual AI-study launchers | `$PPO_STUDY_ROOT` (or `review_round1_runs/...` in the repo) | Per-launcher override of the study root |
+| `VENV` | launchers that activate a virtualenv | `<repo>/.venv` | Virtualenv to activate |
 
 Python entry points (`run/run_seeds.py`, `run/run_all.py`, `tools/*.py`) expose
 the same locations as `--argument` defaults derived from `Path.home()`; pass the

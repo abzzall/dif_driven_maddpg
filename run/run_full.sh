@@ -8,16 +8,16 @@
 #   * offload mirror per-checkpoint, same as before
 #
 # Usage:
-#   bash run_full.sh            # foreground, ~30h
-#   nohup bash run_full.sh &    # background, survives terminal close
+#   bash run/run_full.sh            # foreground, ~30h
+#   nohup bash run/run_full.sh &    # background, survives terminal close
 #
 # Override anything by exporting before invocation, e.g.:
-#   PARALLEL=2 bash run_full.sh
-#   SEEDS="1 2" bash run_full.sh
-#   ARTIFACT_ROOT=/tmp/test bash run_full.sh
+#   PARALLEL=2 bash run/run_full.sh
+#   SEEDS="1 2" bash run/run_full.sh
+#   ARTIFACT_ROOT=/tmp/test bash run/run_full.sh
 
 set -uo pipefail
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # --- Defaults (overridable via env) ---
@@ -67,8 +67,8 @@ echo "============================================================"
 } | tee -a "$MASTER_LOG"
 
 # --- Pre-flight checks ---
-if [ ! -f "$REPO_ROOT/.venvLin/bin/activate" ]; then
-    echo "ERROR: .venvLin not found at $REPO_ROOT/.venvLin" | tee -a "$MASTER_LOG"
+if [ ! -f "${VENV:-$REPO_ROOT/.venv}/bin/activate" ]; then
+    echo "ERROR: virtualenv not found at ${VENV:-$REPO_ROOT/.venv} (set VENV)" | tee -a "$MASTER_LOG"
     exit 1
 fi
 if ! command -v python >/dev/null 2>&1; then

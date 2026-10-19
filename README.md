@@ -1,191 +1,231 @@
-# Decentralized Shared Actor–Critic Learning for Multi-Robot Coverage
+# Multi-Agent Reinforcement Learning for Multi-Robot Landmark Coverage
 
-[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
-[![DOI](https://img.shields.io/badge/DOI-10.3390%2Frobotics15070119-blue.svg)](https://doi.org/10.3390/robotics15070119)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
+[![AI 2026](https://img.shields.io/badge/DOI-10.3390%2Fai7100411-blue.svg)](https://doi.org/10.3390/ai7100411)
+[![Robotics 2026](https://img.shields.io/badge/DOI-10.3390%2Frobotics15070119-blue.svg)](https://doi.org/10.3390/robotics15070119)
+[![JRC 2026](https://img.shields.io/badge/DOI-10.18196%2Fjrc.v6i6.28387-blue.svg)](https://doi.org/10.18196/jrc.v6i6.28387)
 
-Research codebase for **cooperative coverage of landmarks by small teams of
-differential-drive robots** using multi-agent reinforcement learning. A
-**decentralized shared actor–critic** framework trains a single actor and a
-single critic — reused across all agents — against a custom
-[PettingZoo](https://pettingzoo.farama.org/) `ParallelEnv` in continuous 2D
-simulation. Agents use **permutation-invariant local observations** and
-**continuous differential-drive control**, and the reward is shaped by a stepwise
-**Hungarian assignment** between agents and landmarks, together with collision
-penalties and time-efficiency terms. Several MADDPG / IDDPG variants are provided
-for comparison. Homogeneous teams of **four, five, and six** agents are evaluated
-over multiple independent seeds.
+Research code for **cooperative landmark coverage by teams of differential-drive
+robots** trained with multi-agent reinforcement learning. Every robot runs the
+same shared policy in a CUDA-accelerated [PettingZoo](https://pettingzoo.farama.org/)
+`ParallelEnv` with continuous 2D dynamics. A Hungarian assignment between robots
+and landmarks shapes the reward. Episodes succeed only when **every** robot has
+reached a landmark.
 
-This repository accompanies the paper:
+The repository accompanies three peer-reviewed articles:
 
-> **Kyzyrkanov, A.E.; Yedilkhan, D.; Amirgaliyeva, S.; Narynov, S.**
-> *Decentralized Shared Actor–Critic Learning for Collision-Aware Small-Team
-> Multi-Robot Coverage.* **Robotics** 2026, 15(7), 119.
-> https://doi.org/10.3390/robotics15070119
+| Paper | What it contributes | Main code |
+|---|---|---|
+| **AI 2026** — *Masked Entity-Attention MAPPO* | Controlled multi-seed study: structuring the scene as masked entity tokens makes MAPPO training reliable | `rl/mappo.py`, `models/graph_nets.py`, `custom_envs/diff_driven/graph_coverage_env.py` |
+| **Robotics 2026** — *Decentralized Shared Actor–Critic* | Shared actor–critic for collision-aware coverage by teams of 4–6 robots | `rl/maddpg.py`, `run/train_done*.py` |
+| **JRC 2026** — *Adaptive Replay Strategies* | Tagged replay buffer and offline replay augmentation for stable off-policy training | `tagged_replay_buffer.py`, `run/train_done350*.py` |
 
-<p align="center">
-  <img src="docs/images/coverage_trajectories.png" alt="Agent trajectories: a team of differential-drive robots covering landmarks while avoiding obstacles" width="49%">
-  <img src="docs/images/learning_curves.png" alt="Learning curves (average return per episode) for teams of 4, 5, and 6 agents" width="49%">
-</p>
+> **Please cite.** Use of this code requires citing the relevant publications
+> (see [Citation](#citation) and [`LICENSE`](LICENSE)).
 
 <p align="center">
-  <em>Left: learned trajectories of a six-robot team covering assigned landmarks
-  (red ×); grey discs are obstacles, from the obstacle-based experiments of the
-  prior JRC paper. Right: training convergence (average return per episode) across
-  team sizes n = 4, 5, 6 with the per-seed spread shaded.</em>
+  <img src="docs/images/heldout_success.png" alt="Held-out full-team success per trained seed for masked entity attention (C) and fixed-index controls (B_wide, B, A)" width="80%">
 </p>
+<p align="center"><em>AI 2026: held-out full-team success of ten independently
+trained policies per configuration. Masked entity attention (C) reaches
+94.6 ± 4.7%. The ordinary and widened fixed-index MLPs (B, B_wide) reach
+6.8 ± 5.1% and 9.3 ± 12.4%.</em></p>
+
+<p align="center">
+  <img src="docs/images/matched_trajectory.png" alt="Matched deterministic rollouts from identical initial conditions: entity-attention policy versus wide flat MLP" width="80%">
+</p>
+<p align="center"><em>Matched rollouts from the same initial scene: the
+entity-attention policy (left) and the wide fixed-index MLP (right).</em></p>
+
+<p align="center">
+  <img src="docs/images/coverage_trajectories.png" alt="Learned trajectories of a six-robot team covering landmarks among obstacles" width="49%">
+  <img src="docs/images/learning_curves.png" alt="Learning curves for teams of 4, 5 and 6 agents" width="49%">
+</p>
+<p align="center"><em>Robotics / JRC 2026: learned trajectories of a six-robot
+team among obstacles (left) and training convergence for n = 4, 5, 6 (right).</em></p>
 
 ---
 
-## Overview
+## Contents
 
-- **Environment** — a pure-tensor, CUDA-accelerated PettingZoo `ParallelEnv` for
-  differential-drive robots. Continuous `(dv_lin, dv_ang)` actions; the reward is
-  a 9-component shaped vector per agent, combining progress toward an assigned
-  landmark, global Hungarian coverage, goal-reaching bonuses, agent–agent and
-  obstacle collision penalties, and velocity/time shaping.
-- **Algorithms** — an abstract `MADDPGBase` plus several concrete variants that
-  all share a single actor and a single critic network; they differ only in what
-  is fed to the critic and how per-agent losses are aggregated:
-  - `MADDPGSharedActorCritic` — joint-action centralized critic (CTDE).
-  - `MADDPGSharedActorCriticIndependent` / `...IndependentQmean` — per-agent
-    actor-loss aggregation variants.
-  - `IDDPG` — critic over `(state, single-agent action)`.
-  - `IDDPGWithoutS` — fully independent critic over `(obs_i, action_i)`.
-- **Models** — `SimpleActor`, `SharedCritic`, `MultiheadCritic`.
-- **Replay** — a tagged replay buffer that reserves capacity for rare
-  goal-reaching transitions to stabilize learning, plus an optional offline
-  replay augmentation.
-
-## Repository layout
-
-| Path | Contents |
-|---|---|
-| `custom_envs/diff_driven/` | Differential-drive PettingZoo environments |
-| `rl/maddpg.py` | `MADDPGBase` and all algorithm variants |
-| `models/` | Actor and critic networks |
-| `config.py` | Global default hyperparameters and device registry |
-| `run/` | Training / evaluation entry points and launch scripts |
-| `tools/` | Log export and results-notebook generation |
-| `res/` | Analysis notebooks and generated result figures |
-| `webots_world/` | Webots world files for simulation |
+- [Installation](#installation)
+- [Repository layout](#repository-layout)
+- [Quick start](#quick-start)
+- [Reproducing the papers](#reproducing-the-papers)
+- [Citation](#citation)
+- [License](#license)
 
 ## Installation
 
-Requires Python 3.10–3.12 and a CUDA-capable GPU (the environment and algorithms
-run on GPU by default). PyTorch must be installed for your CUDA version.
+You need Python 3.10–3.12 and an NVIDIA GPU. The environment and the learners
+run on CUDA by default.
 
 ```bash
 git clone https://github.com/qyzyrqanov/dif_driven_maddpg.git
 cd dif_driven_maddpg
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
+# install PyTorch for your CUDA version first: https://pytorch.org/get-started/locally/
 pip install -r requirements.txt
 ```
 
-## Usage
+`requirements.txt` lists the direct dependencies. `requirements-linux.txt` pins
+the exact environment (Python 3.12, PyTorch 2.13 + CUDA 13) used for the
+AI 2026 experiments.
 
-The project root must be on `PYTHONPATH` (the code uses absolute package imports
-like `from custom_envs.diff_driven... import ...`). Training scripts write all
-artifacts (checkpoints, replay buffers, plots, logs, CSVs) to the **current
-working directory** using bare filenames — so run each script from the directory
-where you want its outputs.
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `custom_envs/diff_driven/gym_env/centered_paralelenv/env.py` | Differential-drive PettingZoo environments with the 9-component reward (Robotics / JRC) |
+| `custom_envs/diff_driven/graph_coverage_env.py` | Entity-structured coverage environment with the redesigned reward (AI) |
+| `rl/maddpg.py` | `MADDPGBase` and the shared actor–critic MADDPG / IDDPG variants |
+| `rl/mappo.py` | MAPPO with flat (MLP) and entity-structured (attention / Deep Sets) networks |
+| `rl/convergence.py` | Success-rate-plateau stopping rule shared by all learners |
+| `models/` | Actors and critics: `SimpleActor`, `SharedCritic`, `MultiheadCritic`, MAPPO MLPs, entity encoders |
+| `baselines/` | Off-policy MADDPG / IDDPG controls written from scratch (AI) |
+| `tagged_replay_buffer.py`, `replay_buffer.py` | Replay buffers; the tagged buffer reserves capacity for goal-reaching transitions |
+| `config.py` | Global defaults and device selection |
+| `run/` | Training and evaluation entry points (`*.py`) and launchers (`*.sh`, `*.ps1`) |
+| `tools/` | Aggregation, figure and notebook generators, diagnostics |
+| `res/` | Analysis notebooks |
+| `docs/` | [Configuration and paths](docs/CONFIGURATION.md), README figures |
+
+## Quick start
+
+Put the repository root on `PYTHONPATH`, since all imports are absolute. Training scripts
+write checkpoints, logs and plots into `--out_dir`. The older `run/train_done*.py`
+scripts write into the current working directory instead.
 
 ```bash
 source .venv/bin/activate
 export PYTHONPATH=$(pwd)
-python run/train_done4.py            # or any other run/train_*.py
+
+# Masked entity-attention MAPPO (configuration C of the AI paper), 5 robots
+python run/train_seeded.py --algorithm mappo --n 5 --mode full --seed 1 \
+    --v_ang_max pi2 --reward new --obs graph --no_step_csv \
+    --convergence --conv_max_hours 3 --conv_max_episodes 5000 \
+    --out_dir runs/C_n5_seed1
+
+# Held-out evaluation on the common 100-scenario bank
+python run/eval_frozen.py runs/C_n5_seed1 --episodes 100 --seed0 900000 \
+    --out runs/heldout_eval.csv
 ```
 
-All output and data locations are configurable via environment variables (no
-machine-specific paths are hardcoded); the repo root is auto-detected. See
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full list of variables
-and examples.
-
-Restarting a script from the same directory resumes automatically from the last
-saved episode. Validate a run by inspecting the generated
-`learning_curve_episode_*.png`, `actor_loss_episode_*.png`,
-`critic_loss_episode_*.png`, `trajectory_episode_*.png`, and `episode_log.txt`.
-
-There are no automated tests, lint, or build steps; validation is by inspecting
-these training artifacts.
+Restarting a run with the same output directory resumes from its last
+checkpoint. All storage locations can be overridden with environment variables;
+see [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 ## Reproducing the papers
 
-**Primary paper — *Decentralized Shared Actor–Critic Learning* (Robotics 2026).**
-This paper covers the core contribution of the repository: a single **shared**
-actor and **shared** critic trained across all agents for **collision-aware
-coverage by small teams** (n = 4, 5, 6), with Hungarian-assignment reward shaping
-and the per-agent done / landmark-coverage mechanics of `DiffDriveParallelEnvDone`.
-The `run/train_done*.py` scripts (and their `run/run_train_done*` launchers) are
-the entry points for these coverage experiments.
+### AI 2026 — Masked entity-attention MAPPO
 
-**Prior paper — *Adaptive Replay Strategies* (JRC 2025).** This paper focused on
-**adaptive replay** — the offline replay augmentation and the tagged replay
-buffer — for a team of **6 differential-drive drones with obstacles**. It uses the
-`MADDPGSharedActorCriticIndependentQmean` algorithm and is reproduced with:
+Every configuration uses the same trainer, `run/train_seeded.py --algorithm mappo`,
+with five robots and convergence-based stopping. Configurations differ only in
+their flags:
+
+| ID | Configuration | Flags |
+|---|---|---|
+| **C** | Masked entity-attention actor–critic (proposed) | `--reward new --obs graph` |
+| B | Fixed-index MLP | `--reward new --obs flat` |
+| B_wide | Wider fixed-index MLP (1.21× C's parameters) | `--reward new --obs flat --mlp_hidden 512` |
+| D | Masked Deep Sets | `--reward new --obs graph --entity_encoder deepsets` |
+| E | Attention without the completed-entity mask | `--reward new --obs graph --no_entity_mask` |
+| A | Legacy 9-component reward (context only) | `--reward legacy --no_done_as_obstacles` |
+
+| Experiment | Launcher | Evaluator |
+|---|---|---|
+| Principal comparison, seeds 1–5 | `run/run_ppo_study.sh` | `run/eval_frozen.py` → `tools/aggregate_heldout.py` |
+| Principal comparison, seeds 6–10 | `run/run_r2_3_additional_seeds.sh` | `run/run_r2_3_heldout_eval.sh` |
+| Component controls D, E | `run/run_ablation_stream.sh` | `run/run_ablation_eval_after_training.sh` |
+| Learning-rate sensitivity (3 × 3, 45 policies) | `run/run_r2_2_lr_sensitivity.sh` | `run/eval_frozen.py` |
+| Zero-shot team size and workspace scale | — | `run/run_r2_5_cardinality_density.sh` (`run/eval_zeroshot.py`) |
+| Distribution shift (landmarks, sensing, actuation) | — | `run/run_r2_4_shift.sh` (`run/eval_shift.py`) |
+| Collision-projection audit | — | `run/run_collision_audit.sh` (`run/eval_collision_audit.py`) |
+| Off-policy MADDPG / IDDPG controls | `run/train_offpolicy_baseline.py` | `run/eval_offpolicy_baselines.py` |
+
+The launchers record the exact compute caps for each batch of runs. Every run
+also writes its full configuration to `meta.json`. Figures are produced by
+`tools/create_*_figure.py`, `tools/matched_trajectories.py` and
+`res/ppo_study_results.ipynb` (generated by `tools/create_ppo_study_notebook.py`).
+Per-run outcomes (Supplementary Data S1–S8) are published with the article.
+
+### Robotics 2026 — Decentralized shared actor–critic
+
+The coverage experiments for teams of n = 4, 5, 6 use `DiffDriveParallelEnvDone`
+with per-agent termination and Hungarian-assignment reward shaping. The entry
+points are `run/train_done{4,5,6}.py` and their `_ablation` variants. The
+multi-seed revision sweep runs through `run/run_full.sh` →
+`run/run_seeds_offline_replay.sh` → `run/train_seeded.py`. MADDPG and MAPPO
+comparisons use `run/run_maddpg_baseline.sh` and `run/run_mappo_baseline.sh`.
+
+### JRC 2026 — Adaptive replay strategies
+
+This paper studies the tagged replay buffer and offline replay augmentation for
+six differential-drive robots with obstacles, using
+`MADDPGSharedActorCriticIndependentQmean`.
 
 | Purpose | Script |
 |---|---|
 | Main runs (offline replay + tagged replay buffer) | `run/train_done350.py` |
-| Ablation runs | `run/train_done350_ablation*.py` |
-| Baseline runs | `run/train_done350_base*.py` |
+| Ablations | `run/train_done350_ablation*.py` |
+| Baselines | `run/train_done350_base*.py` |
 
-Each of these iterates over seeds, writing per-seed outputs into numbered
-subdirectories of the current working directory.
+Each script iterates over seeds and writes per-seed outputs into numbered
+subdirectories of the working directory.
 
 ## Citation
 
-If you use this code or build on this work, please cite the primary paper. If you
-use the adaptive-replay training strategies, please also cite the prior paper
-that this code was originally developed for.
+**If you use this code, data or any part of it, you must cite the relevant
+publications.** If in doubt, cite all three.
 
-### Primary paper (this repository)
+**APA**
 
-**URL:** https://doi.org/10.3390/robotics15070119
-
-**APA:**
+> Amirgaliyeva, S., Kyzyrkanov, A. E., Yedilkhan, D., Turgunov, B., Merembayev, T., & Narynov, S. (2026).
+> Reliable Learning-Enabled Multi-Robot Coverage with Masked Entity-Attention MAPPO: A Controlled Multi-Seed Study.
+> *AI, 7*(10), 411. https://doi.org/10.3390/ai7100411
 
 > Kyzyrkanov, A. E., Yedilkhan, D., Amirgaliyeva, S., & Narynov, S. (2026).
-> Decentralized Shared Actor–Critic Learning for Collision-Aware Small-Team
-> Multi-Robot Coverage. *Robotics, 15*(7), 119. https://doi.org/10.3390/robotics15070119
+> Decentralized Shared Actor–Critic Learning for Collision-Aware Small-Team Multi-Robot Coverage.
+> *Robotics, 15*(7), 119. https://doi.org/10.3390/robotics15070119
 
-**BibTeX:**
+> Kyzyrkanov, A., Otarbay, Z., Yedilkhan, D., & Amirgaliyev, B. (2026).
+> Adaptive Replay Strategies Stabilize Multi-Agent Reinforcement Learning for Differential-Drive Robot Coordination.
+> *Journal of Robotics and Control (JRC), 6*(6), 3068–3087. https://doi.org/10.18196/jrc.v6i6.28387
+
+**BibTeX**
 
 ```bibtex
-@Article{robotics15070119,
-AUTHOR = {Kyzyrkanov, Abzal E. and Yedilkhan, Didar and Amirgaliyeva, Saltanat and Narynov, Sergazy},
-TITLE = {Decentralized Shared Actor–Critic Learning for Collision-Aware Small-Team Multi-Robot Coverage},
-JOURNAL = {Robotics},
-VOLUME = {15},
-YEAR = {2026},
-NUMBER = {7},
-ARTICLE-NUMBER = {119},
-URL = {https://www.mdpi.com/2218-6581/15/7/119},
-ISSN = {2218-6581},
-ABSTRACT = {This study presents a decentralized shared actor–critic framework for cooperative multi-robot coverage in continuous two-dimensional simulation. The method combines permutation-invariant local observations, continuous differential-drive control, and reward shaping based on stepwise Hungarian assignment distances, collision penalties, and time efficiency. Homogeneous teams of four, five, and six agents are evaluated in an obstacle-free environment using five independent training seeds. In the final training window, the full reward configuration achieved full-team success rates of 98.2 ± 2.9% for four agents, 85.1 ± 18.0% for five agents, and 96.3 ± 2.0% for six agents, with mean landmark coverage above 96% in all cases. The lower mean in the five-agent setting was associated with higher seed-level variability dominated by one low-success seed. Reward ablations without assignment shaping or collision penalties remained viable, and seed-level tests did not show a statistically significant final-window advantage of the full reward configuration. The full configuration reached the 80% rolling-success threshold earlier in median terms, with the clearest seed-level support in the four-agent setting. Within-environment comparison showed higher full-team success than MADDPG and MAPPO under the matched training horizon and final-window protocol. Deterministic arena-size transfer from 15×15 to 30×30 showed decreasing full-team success as arena size increased, while partial landmark coverage remained higher than strict full-team completion. The results support the method for small homogeneous teams in the tested obstacle-free simulation, while larger teams, external obstacles, aerial-robot dynamics, formal safety guarantees, and hardware deployment remain future work.},
-DOI = {10.3390/robotics15070119}
+@article{Amirgaliyeva2026MaskedEntityAttentionMAPPO,
+  author  = {Amirgaliyeva, Saltanat and Kyzyrkanov, Abzal E. and Yedilkhan, Didar and Turgunov, Bexultan and Merembayev, Timur and Narynov, Sergazy},
+  title   = {Reliable Learning-Enabled Multi-Robot Coverage with Masked Entity-Attention {MAPPO}: A Controlled Multi-Seed Study},
+  journal = {AI},
+  year    = {2026},
+  volume  = {7},
+  number  = {10},
+  pages   = {411},
+  doi     = {10.3390/ai7100411},
+  url     = {https://doi.org/10.3390/ai7100411}
 }
-```
 
-### Prior work using this code
+@article{Kyzyrkanov2026SharedActorCritic,
+  author  = {Kyzyrkanov, Abzal E. and Yedilkhan, Didar and Amirgaliyeva, Saltanat and Narynov, Sergazy},
+  title   = {Decentralized Shared Actor--Critic Learning for Collision-Aware Small-Team Multi-Robot Coverage},
+  journal = {Robotics},
+  year    = {2026},
+  volume  = {15},
+  number  = {7},
+  pages   = {119},
+  doi     = {10.3390/robotics15070119},
+  url     = {https://doi.org/10.3390/robotics15070119}
+}
 
-**URL:** https://doi.org/10.18196/jrc.v6i6.28387
-
-**APA:**
-
-> Kyzyrkanov, A., Otarbay, Z., Yedilkhan, D., & Amirgaliyev, B. (2025). Adaptive
-> replay strategies stabilize multi-agent reinforcement learning for
-> differential-drive robot coordination. *Journal of Robotics and Control (JRC),
-> 6*(6), 3068–3087. https://doi.org/10.18196/jrc.v6i6.28387
-
-**BibTeX:**
-
-```bibtex
-@article{Kyzyrkanov2025JRCReplay,
+@article{Kyzyrkanov2026AdaptiveReplay,
   author  = {Kyzyrkanov, Abzal and Otarbay, Zhenis and Yedilkhan, Didar and Amirgaliyev, Beibut},
   title   = {Adaptive Replay Strategies Stabilize Multi-Agent Reinforcement Learning for Differential-Drive Robot Coordination},
   journal = {Journal of Robotics and Control (JRC)},
-  year    = {2025},
+  year    = {2026},
+  month   = jan,
   volume  = {6},
   number  = {6},
   pages   = {3068--3087},
@@ -194,14 +234,14 @@ DOI = {10.3390/robotics15070119}
 }
 ```
 
+GitHub's **"Cite this repository"** button reads the same information from
+[`CITATION.cff`](CITATION.cff).
+
 ## License
 
-This work is licensed under the **Creative Commons
-Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)**.
+Licensed under **[CC BY-NC 4.0](LICENSE)** with an explicit citation
+requirement. You may use, share and adapt the material for **non-commercial**
+purposes, provided you **cite the publications above** and indicate any changes.
+**Commercial use requires written permission** from the copyright holder.
 
-You are free to use, share, and adapt the material for **non-commercial**
-purposes, provided you give appropriate credit by **citing the publications
-above**. **Commercial use requires separate written permission** from the
-copyright holder. See [`LICENSE`](./LICENSE) for the full terms.
-
-© 2026 Abzal E. Kyzyrkanov. Contact: abzzall@gmail.com
+© 2025–2026 Abzal E. Kyzyrkanov and co-authors · Contact: abzzall@gmail.com

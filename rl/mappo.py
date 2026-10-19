@@ -41,6 +41,7 @@ import torch
 from config import device as DEFAULT_DEVICE, gamma as GAMMA
 from models.mappo_nets import GaussianActor, CentralizedValue
 from rl.maddpg import MADDPGBase
+from rl.convergence import ConvergenceMonitor
 
 
 class ValueNorm:
@@ -105,6 +106,8 @@ class MAPPO(MADDPGBase):
         value_coef: float = 0.5,
         entropy_coef: float = 0.0,
         max_grad_norm: float = 0.5,
+        mlp_hidden: Optional[int] = None,
+        learning_rate: float = 3e-4,
     ) -> None:
         # NOTE: intentionally do NOT call MADDPGBase.__init__ — it allocates a
         # tagged replay buffer we never use. Set only what the reused helpers need.
@@ -131,15 +134,49 @@ class MAPPO(MADDPGBase):
         self.entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
 
-        # Networks (shared actor + centralized concat-obs value)
-        self.actor = GaussianActor(
-            self.obs_dim, self.action_dim, device=self.device,
-            chckpnt_file="mappo_actor.pth",
+        # Graph mode when the environment emits typed node sets rather than a
+        # flat vector. The observation form dictates the architecture, so the
+        # environment decides it and the loop follows.
+        self.graph_mode = hasattr(env, "graph_obs") and not getattr(
+            env, "flat_observations", True
         )
-        self.critic = CentralizedValue(
-            self.num_agents * self.obs_dim, self.num_agents, device=self.device,
-            chckpnt_file="mappo_critic.pth",
-        )
+
+        if self.graph_mode:
+            from models.graph_nets import GraphGaussianActor, GraphCentralizedValue
+            entity_encoder = getattr(env, "entity_encoder", "attention")
+            use_entity_mask = getattr(env, "use_entity_mask", True)
+            embed_dim = 160 if entity_encoder == "deepsets" else 128
+            self.actor = GraphGaussianActor(
+                env.AGENT_FEATURES, env.LANDMARK_FEATURES, self.action_dim,
+                embed_dim=embed_dim, encoder_type=entity_encoder,
+                use_entity_mask=use_entity_mask,
+                lr=learning_rate,
+                device=self.device, chckpnt_file="gnn_actor.pth",
+            )
+            self.critic = GraphCentralizedValue(
+                env.AGENT_FEATURES, env.LANDMARK_FEATURES,
+                embed_dim=embed_dim, encoder_type=entity_encoder,
+                use_entity_mask=use_entity_mask,
+                lr=learning_rate,
+                device=self.device, chckpnt_file="gnn_critic.pth",
+            )
+        else:
+            # Shared actor + centralized concat-obs value. ``mlp_hidden`` widens
+            # both nets so a flat-observation arm can be run at the graph
+            # encoder's parameter count -- the control that separates
+            # permutation-invariant structure from sheer model capacity.
+            self.actor = GaussianActor(
+                self.obs_dim, self.action_dim, device=self.device,
+                hidden_dim=mlp_hidden,
+                lr=learning_rate,
+                chckpnt_file="mappo_actor.pth",
+            )
+            self.critic = CentralizedValue(
+                self.num_agents * self.obs_dim, self.num_agents, device=self.device,
+                hidden_dim=mlp_hidden,
+                lr=learning_rate,
+                chckpnt_file="mappo_critic.pth",
+            )
         self.max_action = self.actor.max_action
         self.value_norm = ValueNorm(self.device)
 
@@ -147,6 +184,22 @@ class MAPPO(MADDPGBase):
         self.score_history = []
         self.actor_losses = []
         self.critic_losses = []
+
+        # Per-step CSV logging costs ~25% of rollout wall-clock (a pandas
+        # DataFrame build + file append per environment step). Kept on by
+        # default for parity with existing runs; disable for throughput.
+        self.log_step_csv = True
+
+        # Diagnostic plots. The MADDPG loops plotted every episode, which cost
+        # throughput and produced ~700 PNGs per run; a cadence keeps the visual
+        # record without the flood. Trajectories are additionally captured on
+        # "one agent short" episodes -- the dominant failure mode, and one that
+        # aggregate success-rate curves cannot show.
+        self.plot_every = 50
+        self.plot_shortfall = True
+        self.max_shortfall_plots = 20
+        self._shortfall_plots = 0
+        self._last_positions = None
 
     # ----- abstract-method implementations (MADDPGBase is an ABC) -----
     def learn(self, buffer=None):
@@ -181,15 +234,21 @@ class MAPPO(MADDPGBase):
         obs_t, act_t, logp_t, val_t, rew_t, active_t, doneaf_t, jobs_t = (
             [], [], [], [], [], [], [], []
         )
+        # Agent positions, kept for trajectory plots. [N,2] per step is
+        # negligible next to the observation tensors already retained, and the
+        # episode's outcome (and so whether it is worth plotting) is only known
+        # once the episode ends.
+        pos_t = [env.agent_pos.clone()]
 
         j = 0
         while j < max_steps and not done.all():
             active = (~done).clone()                       # active at action time
-            joint_obs = obs.reshape(1, N * self.obs_dim)
+            joint_obs = None if self.graph_mode else obs.reshape(1, N * self.obs_dim)
             with torch.no_grad():
                 raw, logprob = self.actor.act(obs, deterministic=False)   # [N,act],[N]
                 # critic predicts normalized values; GAE works in real units.
-                values = self.value_norm.denormalize(self.critic(joint_obs).squeeze(0))  # [N]
+                raw_v = self.critic(obs) if self.graph_mode else self.critic(joint_obs).squeeze(0)
+                values = self.value_norm.denormalize(raw_v)               # [N]
             env_action = raw.clamp(-self.max_action, self.max_action)
             next_state, next_obs, rewards, next_done = env.step_tensor(env_action)
             reward_scalar = self.reward_sum(env.current_rewards)           # [N]
@@ -201,31 +260,43 @@ class MAPPO(MADDPGBase):
             rew_t.append(reward_scalar)
             active_t.append(active)
             doneaf_t.append(next_done.clone())
-            jobs_t.append(joint_obs.squeeze(0))
+            if not self.graph_mode:
+                jobs_t.append(joint_obs.squeeze(0))
 
-            self.log_env_step_to_csv(total_step=total_steps, episode_id=episode_id)
+            if self.log_step_csv:
+                self.log_env_step_to_csv(total_step=total_steps, episode_id=episode_id)
 
             done = next_done.clone().detach()
             obs = next_obs
+            pos_t.append(env.agent_pos.clone())
             total_steps += 1
             j += 1
 
+        self._last_positions = torch.stack(pos_t).cpu().numpy()  # [T+1,N,2]
+
         # Bootstrap value for agents truncated at the horizon (still active).
         with torch.no_grad():
-            boot_values = self.value_norm.denormalize(
-                self.critic(obs.reshape(1, N * self.obs_dim)).squeeze(0))  # [N]
+            raw_boot = (self.critic(obs) if self.graph_mode
+                        else self.critic(obs.reshape(1, N * self.obs_dim)).squeeze(0))
+            boot_values = self.value_norm.denormalize(raw_boot)  # [N]
 
         traj = dict(
-            obs=torch.stack(obs_t),          # [T,N,obs_dim]
             action=torch.stack(act_t),       # [T,N,act_dim]
             logprob=torch.stack(logp_t),     # [T,N]
             value=torch.stack(val_t),        # [T,N]
             reward=torch.stack(rew_t),       # [T,N]
             active=torch.stack(active_t),    # [T,N] bool
             done_after=torch.stack(doneaf_t),# [T,N] bool
-            joint_obs=torch.stack(jobs_t),   # [T,N*obs_dim]
             boot_value=boot_values,          # [N]
         )
+        if self.graph_mode:
+            # Stack the per-step scenes into one dict of [T, ...] tensors.
+            traj["scene"] = {
+                k: torch.stack([o[k] for o in obs_t]) for k in obs_t[0]
+            }
+        else:
+            traj["obs"] = torch.stack(obs_t)          # [T,N,obs_dim]
+            traj["joint_obs"] = torch.stack(jobs_t)   # [T,N*obs_dim]
         return traj, total_steps
 
     def _gae_for_trajectory(self, traj):
@@ -235,8 +306,15 @@ class MAPPO(MADDPGBase):
         old_logprob, return, advantage).
         """
         T, N = traj["reward"].shape
-        samples = {k: [] for k in
-                   ("joint_obs", "agent_idx", "obs", "action", "logprob", "ret", "adv")}
+        keys = ["agent_idx", "action", "logprob", "ret", "adv"]
+        if self.graph_mode:
+            # One scene per sample. Duplicating the scene across the agents of
+            # a step costs a few MB per rollout and removes the need to track
+            # timestep identity across episode boundaries.
+            keys += ["scene_" + k for k in traj["scene"]]
+        else:
+            keys += ["joint_obs", "obs"]
+        samples = {k: [] for k in keys}
         gamma, lam = self.gamma, self.gae_lambda
 
         for i in range(N):
@@ -264,10 +342,14 @@ class MAPPO(MADDPGBase):
                 adv[t] = gae
             ret = adv + v
 
-            samples["joint_obs"].append(traj["joint_obs"][:k + 1])         # [k+1, N*obs]
+            if self.graph_mode:
+                for sk, sv in traj["scene"].items():
+                    samples["scene_" + sk].append(sv[:k + 1])
+            else:
+                samples["joint_obs"].append(traj["joint_obs"][:k + 1])     # [k+1, N*obs]
+                samples["obs"].append(traj["obs"][:k + 1, i])              # [k+1, obs]
             samples["agent_idx"].append(torch.full((k + 1,), i, dtype=torch.long,
                                                     device=self.device))
-            samples["obs"].append(traj["obs"][:k + 1, i])                  # [k+1, obs]
             samples["action"].append(traj["action"][:k + 1, i])           # [k+1, act]
             samples["logprob"].append(traj["logprob"][:k + 1, i])         # [k+1]
             samples["ret"].append(ret)
@@ -276,9 +358,15 @@ class MAPPO(MADDPGBase):
 
     def _ppo_update(self, batch):
         """PPO clipped-surrogate update over the collected on-policy batch."""
-        joint_obs = batch["joint_obs"]      # [B, N*obs]
         agent_idx = batch["agent_idx"]      # [B]
-        obs = batch["obs"]                  # [B, obs]
+        if self.graph_mode:
+            scene = {k[len("scene_"):]: v for k, v in batch.items()
+                     if k.startswith("scene_")}
+            joint_obs = obs = None
+        else:
+            scene = None
+            joint_obs = batch["joint_obs"]  # [B, N*obs]
+            obs = batch["obs"]              # [B, obs]
         action = batch["action"]            # [B, act]
         old_logprob = batch["logprob"]      # [B]
         returns = batch["ret"]              # [B]
@@ -290,7 +378,7 @@ class MAPPO(MADDPGBase):
         returns_norm = self.value_norm.normalize(returns)
 
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-        B = obs.shape[0]
+        B = agent_idx.shape[0]
         mb_size = max(1, B // self.num_minibatches)
 
         a_losses, c_losses = [], []
@@ -298,14 +386,27 @@ class MAPPO(MADDPGBase):
             perm = torch.randperm(B, device=self.device)
             for start in range(0, B, mb_size):
                 idx = perm[start:start + mb_size]
-                new_logprob, entropy = self.actor.evaluate_actions(obs[idx], action[idx])
+                if self.graph_mode:
+                    # Evaluate the whole scene, then read off the row for the
+                    # agent this sample belongs to.
+                    mb_scene = {k: v[idx] for k, v in scene.items()}
+                    ar = torch.arange(idx.shape[0], device=self.device)
+                    mean, std = self.actor.forward(mb_scene)      # [mb,N,act]
+                    dist = torch.distributions.Normal(
+                        mean[ar, agent_idx[idx]], std[ar, agent_idx[idx]])
+                    new_logprob = dist.log_prob(action[idx]).sum(-1)
+                    entropy = dist.entropy().sum(-1)
+                else:
+                    new_logprob, entropy = self.actor.evaluate_actions(
+                        obs[idx], action[idx])
                 ratio = (new_logprob - old_logprob[idx]).exp()
                 surr1 = ratio * adv[idx]
                 surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv[idx]
                 policy_loss = -torch.min(surr1, surr2).mean()
                 entropy_loss = entropy.mean()
 
-                values_all = self.critic(joint_obs[idx])               # [mb, N] (normalized)
+                values_all = (self.critic(mb_scene) if self.graph_mode
+                              else self.critic(joint_obs[idx]))        # [mb, N] normalized
                 value_pred = values_all.gather(1, agent_idx[idx].unsqueeze(1)).squeeze(1)
                 value_loss = (value_pred - returns_norm[idx]).pow(2).mean()
 
@@ -335,8 +436,13 @@ class MAPPO(MADDPGBase):
         meta_extra: Optional[dict] = None,
         meta_path: str = "meta.json",
         post_episode_callback: Optional[Callable[[int, bool], None]] = None,
+        convergence: Optional[ConvergenceMonitor] = None,
         **_ignored,   # swallow DDPG-only kwargs the launcher passes
     ) -> None:
+        # With a convergence monitor the episode count is an outcome, not a
+        # budget: run until the success-rate plateau (or a hard cap) is hit.
+        if convergence is not None:
+            n_games = convergence.max_episodes
         # ----- resume -----
         if os.path.exists(checkpoint_path):
             with open(checkpoint_path, "rb") as f:
@@ -348,6 +454,8 @@ class MAPPO(MADDPGBase):
             peak_gpu_bytes = int(sd.get("peak_gpu_bytes", 0))
             if sd.get("value_norm") is not None:
                 self.value_norm.load_state_dict(sd["value_norm"])
+            if convergence is not None and sd.get("convergence") is not None:
+                convergence.load_state_dict(sd["convergence"])
             self.load_checkpoint()
             print(f"Resuming MAPPO from episode {start_episode}", flush=True)
         else:
@@ -373,12 +481,24 @@ class MAPPO(MADDPGBase):
                 "total_train_seconds": total_train_seconds,
                 "peak_gpu_bytes": peak_gpu_bytes,
                 "value_norm": self.value_norm.state_dict(),
+                "convergence": convergence.state_dict() if convergence else None,
             }
-            with open(checkpoint_path, "wb") as f:
+            # Write via a temp file + atomic rename. A plain in-place dump can
+            # be truncated to 0 bytes if the process dies mid-write (an OOM
+            # kill did exactly that), which then makes the run unresumable --
+            # the checkpoint is lost precisely when it is most needed.
+            tmp = checkpoint_path + ".tmp"
+            with open(tmp, "wb") as f:
                 pickle.dump(sd, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, checkpoint_path)
             self.save_checkpoint()
+            extra = dict(meta_extra or {})
+            if convergence is not None:
+                extra.update(convergence.summary())
             self._save_meta_json(
-                meta_path=meta_path, meta_extra=meta_extra, n_games_target=n_games,
+                meta_path=meta_path, meta_extra=extra, n_games_target=n_games,
                 episodes_completed=ep_completed, total_steps=total_steps,
                 total_train_seconds=total_train_seconds, peak_gpu_bytes=peak_gpu_bytes,
                 finished=finished,
@@ -408,8 +528,36 @@ class MAPPO(MADDPGBase):
             print(f"[MAPPO] ep {i} score {score:.2f} done {done_count}/{self.num_agents} "
                   f"steps {total_steps}", flush=True)
 
-            # PPO update at the end of each rollout window (and the final episode).
-            is_last = (i == n_games - 1)
+            # --- diagnostic plots (cadenced, not per-episode) ---
+            try:
+                if self.plot_every and (i % self.plot_every == 0):
+                    self.plot_learning_curve(episode=i)
+                    if self.actor_losses:
+                        self.plot_actor_loss(episode=i)
+                    if self.critic_losses:
+                        self.plot_critic_loss(episode=i)
+                    self.plot_episode_gone_trajectory(self._last_positions, episode=i)
+                # The failure mode worth seeing: the team stalls one agent short.
+                elif (self.plot_shortfall
+                      and done_count == self.num_agents - 1
+                      and self._shortfall_plots < self.max_shortfall_plots):
+                    self.plot_episode_gone_trajectory(
+                        self._last_positions, episode=f"{i}_oneshort")
+                    self._shortfall_plots += 1
+            except Exception as exc:
+                print(f"[MAPPO] plotting failed at ep {i}: {exc!r}", flush=True)
+
+            # Convergence check: plateau in the rolling full-team success rate.
+            should_stop = False
+            if convergence is not None:
+                should_stop = convergence.update(
+                    full_team_success=(done_count == self.num_agents),
+                    elapsed_hours=total_train_seconds / 3600.0,
+                )
+
+            # PPO update at the end of each rollout window, on the final
+            # episode, and before stopping so no rollout is discarded.
+            is_last = (i == n_games - 1) or should_stop
             if episodes_in_rollout >= self.rollout_episodes or is_last:
                 batch = {k: torch.cat(v, dim=0) for k, v in rollout.items()}
                 c_loss, a_loss = self._ppo_update(batch)
@@ -430,5 +578,13 @@ class MAPPO(MADDPGBase):
             if i > 0:
                 save_state(i + 1, finished=is_last)
 
-        save_state(n_games, finished=True)
+            if should_stop:
+                print(f"[MAPPO] stopping at episode {i + 1}: "
+                      f"reason={convergence.stop_reason} "
+                      f"rolling_sr={convergence.rolling_sr():.2f}% "
+                      f"best={max(convergence.best_sr, 0.0):.2f}%", flush=True)
+                save_state(i + 1, finished=True)
+                break
+        else:
+            save_state(n_games, finished=True)
         print("MAPPO training complete.", flush=True)

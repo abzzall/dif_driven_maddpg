@@ -27,6 +27,7 @@ from rl.maddpg import (  # noqa: E402
     MADDPGSharedActorCriticIndependentObs,
 )
 from rl.mappo import MAPPO  # noqa: E402
+from rl import convergence as conv  # noqa: E402
 
 ALGORITHMS = {
     "iddpg_without_s": IDDPGWithoutS,        # canonical: shared decentralized critic (obs_i, action_i)
@@ -54,7 +55,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run one canonical IDDPGWithoutS training configuration."
     )
-    parser.add_argument("--n", type=int, choices=[4, 5, 6], required=True)
+    parser.add_argument("--n", type=int, required=True,
+                        help="Number of agents (= number of landmarks).")
+    parser.add_argument(
+        "--env_size", type=float, default=None,
+        help="Arena side length. Default: the config value (20), regardless of "
+             "team size -- which means agent density rises with n. Pass "
+             "--scale_env to hold density constant instead.",
+    )
+    parser.add_argument(
+        "--scale_env", action="store_true",
+        help="Scale the arena as sqrt(n/5) x 20 so area per agent matches the "
+             "n=5 setting. Separates 'more agents' from 'more crowded': with a "
+             "fixed arena the two are confounded.",
+    )
     parser.add_argument(
         "--algorithm",
         choices=sorted(ALGORITHMS),
@@ -71,7 +85,7 @@ def parse_args() -> argparse.Namespace:
         "--v_ang_max",
         choices=["pi9", "pi6", "pi2"],
         default="pi2",
-        help="Angular velocity cap. Default pi2 — confirmed Z7S value (2026-05-18 evidence).",
+        help="Angular velocity cap. Default pi2, the value used in the published experiments.",
     )
     parser.add_argument(
         "--use_orbit_restart",
@@ -157,6 +171,123 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=10,
         help="Used only when --offload_mode=every_k. Default 10.",
+    )
+    parser.add_argument(
+        "--convergence",
+        action="store_true",
+        help="Stop on a plateau of the rolling full-team success rate instead "
+             "of at --episodes. Makes the episode count a measured outcome, so "
+             "on- and off-policy methods are not budgeted by a constant that "
+             "favours one family. Records stop_reason/episodes_used in meta.json. "
+             "Applies to mappo and to the DDPG-family loops alike, so the "
+             "families share one budget rule.",
+    )
+    parser.add_argument("--conv_window", type=int, default=conv.DEFAULT_WINDOW,
+                        help=f"Rolling SR window. Default {conv.DEFAULT_WINDOW}.")
+    parser.add_argument("--conv_min_delta", type=float, default=conv.DEFAULT_MIN_DELTA,
+                        help=f"Min SR improvement (pp) counted as progress. "
+                             f"Default {conv.DEFAULT_MIN_DELTA}.")
+    parser.add_argument("--conv_patience", type=int, default=conv.DEFAULT_PATIENCE,
+                        help=f"Episodes without a new best rolling SR before "
+                             f"stopping. Default {conv.DEFAULT_PATIENCE}.")
+    parser.add_argument("--conv_min_episodes", type=int, default=conv.DEFAULT_MIN_EPISODES,
+                        help=f"Never stop before this many episodes. "
+                             f"Default {conv.DEFAULT_MIN_EPISODES}.")
+    parser.add_argument("--conv_max_episodes", type=int, default=conv.DEFAULT_MAX_EPISODES,
+                        help=f"Hard episode cap. Default {conv.DEFAULT_MAX_EPISODES}.")
+    parser.add_argument("--conv_max_hours", type=float, default=conv.DEFAULT_MAX_HOURS,
+                        help=f"Hard wall-clock cap per run. Default {conv.DEFAULT_MAX_HOURS}.")
+    parser.add_argument(
+        "--no_step_csv",
+        action="store_true",
+        help="Disable per-step CSV logging (~25%% of rollout wall-clock). "
+             "Per-episode summaries are unaffected.",
+    )
+    parser.add_argument(
+        "--reward",
+        choices=["legacy", "new"],
+        default="legacy",
+        help="'legacy': the inherited 9-component reward on "
+             "DiffDriveParallelEnvDone. 'new': the redesigned 6-component "
+             "reward on GraphCoverageEnv with flat observations (no done-agent "
+             "repulsion, team-completion bonus, rescaled so terminal events "
+             "dominate). Forces --no_step_csv, which assumes 9 components.",
+    )
+    parser.add_argument(
+        "--mlp_hidden",
+        type=int,
+        default=None,
+        help="Hidden width for the flat-observation MLP actor/critic. Use to "
+             "match the graph encoder's parameter count so an observation-form "
+             "comparison is not confounded by model capacity. 512 gives the "
+             "actor 1.03x the graph actor's parameters. mappo only.",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=None,
+        help="Override the MAPPO actor and critic Adam learning rate. The "
+             "canonical submitted setting is 3e-4. MAPPO only.",
+    )
+    parser.add_argument(
+        "--obs",
+        choices=["flat", "graph"],
+        default="flat",
+        help="Observation form when --reward new. 'flat': fixed index-order "
+             "concatenation through the MLP networks. 'graph': typed node sets "
+             "through the permutation-invariant attention encoder, which also "
+             "makes the policy valid at any team size.",
+    )
+    parser.add_argument(
+        "--entity_encoder",
+        choices=["attention", "deepsets"],
+        default="attention",
+        help="Entity encoder for --reward new --obs graph. 'deepsets' uses "
+             "typed token transforms plus masked mean pooling and a "
+             "parameter-matched 160-wide embedding.",
+    )
+    parser.add_argument(
+        "--no_entity_mask",
+        action="store_true",
+        help="Attention ablation: retain completed robots and covered "
+             "landmarks as attention keys while keeping their status features.",
+    )
+    parser.add_argument(
+        "--require_gpu",
+        action="store_true",
+        help="Refuse to start unless CUDA is available; never fall back to CPU.",
+    )
+    parser.add_argument(
+        "--done_as_obstacles",
+        dest="done_as_obstacles",
+        action="store_true",
+        default=True,
+        help="Legacy reward only: treat finished agents as static obstacles in "
+             "reward component 5, as in the published Robotics/JRC experiments "
+             "(default). A done agent parks on the landmark it covered, so this "
+             "places a repulsion field on every solved goal.",
+    )
+    parser.add_argument(
+        "--no_done_as_obstacles",
+        dest="done_as_obstacles",
+        action="store_false",
+        help="Legacy reward only: drop the done-agent repulsion term. Used for "
+             "arm A of the entity-attention MAPPO study.",
+    )
+    parser.add_argument(
+        "--plot_every",
+        type=int,
+        default=50,
+        help="Write learning-curve / loss / trajectory plots every N episodes "
+             "(0 disables). The MADDPG loops plotted every episode, producing "
+             "~700 PNGs per run. Default 50. mappo only.",
+    )
+    parser.add_argument(
+        "--max_shortfall_plots",
+        type=int,
+        default=20,
+        help="Cap on trajectory plots captured for episodes that end exactly "
+             "one agent short (the dominant failure mode). 0 disables. mappo only.",
     )
     return parser.parse_args()
 
@@ -369,6 +500,11 @@ def read_restart_count(out_dir: Path) -> int:
 
 def main() -> None:
     args = parse_args()
+    if args.require_gpu and not torch.cuda.is_available():
+        raise SystemExit(
+            "CUDA is required for this run, but torch.cuda.is_available() is false. "
+            "Resolve the NVIDIA driver/library state before launching training."
+        )
     out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -397,18 +533,51 @@ def main() -> None:
         sys.exit(2)
 
     v_ang_max = parse_v_ang_max(args.v_ang_max)
-    env = DiffDriveParallelEnvDone(
-        num_agents=args.n,
-        num_obstacles=0,
-        v_ang_max=v_ang_max,
-    )
+    import config as _cfg
+    if args.env_size is not None:
+        env_size = float(args.env_size)
+    elif args.scale_env:
+        # Constant area per agent relative to the n=5 reference.
+        env_size = float(_cfg.env_size) * (args.n / 5.0) ** 0.5
+    else:
+        env_size = float(_cfg.env_size)
+    print(f"env_size={env_size:.2f} for n={args.n} "
+          f"(area/agent={env_size**2/args.n:.1f})", flush=True)
+    if args.reward == "new":
+        # Redesigned reward (6 components) with flat observations: the control
+        # arm that isolates the reward change from the graph encoder.
+        from custom_envs.diff_driven.graph_coverage_env import (  # noqa: E402
+            GraphCoverageEnv, DEFAULT_SCALES,
+        )
+        env = GraphCoverageEnv(
+            num_agents=args.n,
+            num_obstacles=0,
+            v_ang_max=v_ang_max,
+            env_size=env_size,
+            flat_observations=(args.obs == "flat"),
+        )
+        env.entity_encoder = args.entity_encoder
+        env.use_entity_mask = not args.no_entity_mask
+        reward_scales = list(DEFAULT_SCALES)
+    else:
+        env = DiffDriveParallelEnvDone(
+            num_agents=args.n,
+            num_obstacles=0,
+            v_ang_max=v_ang_max,
+            done_as_obstacles=args.done_as_obstacles,
+        )
+        reward_scales = SCALES[args.mode]
     algo_cls = ALGORITHMS[args.algorithm]
-    maddpg = algo_cls(
-        env,
-        reward_scales=SCALES[args.mode],
-        batch_size=128,
-        replay_buffer_size=50000,
-    )
+    algo_kwargs = dict(batch_size=128, replay_buffer_size=50000)
+    if args.algorithm == "mappo" and args.mlp_hidden is not None:
+        algo_kwargs["mlp_hidden"] = args.mlp_hidden
+    if args.learning_rate is not None:
+        if args.algorithm != "mappo":
+            raise SystemExit("--learning_rate is currently supported only for mappo")
+        if not np.isfinite(args.learning_rate) or args.learning_rate <= 0:
+            raise SystemExit("--learning_rate must be a finite positive value")
+        algo_kwargs["learning_rate"] = args.learning_rate
+    maddpg = algo_cls(env, reward_scales=reward_scales, **algo_kwargs)
 
     meta_extra = {
         "n": args.n,
@@ -423,6 +592,20 @@ def main() -> None:
         "training_loop": "main_loop" if args.use_offline_replay else "train_loop",
         "out_dir": str(out_dir),
         "command_start_iso": start_iso,
+        "budget_protocol": "convergence" if args.convergence else "episode_cap",
+        "log_step_csv": not args.no_step_csv,
+        "reward_design": args.reward,
+        "observation": args.obs if args.reward == "new" else "flat",
+        "entity_encoder": args.entity_encoder if args.obs == "graph" else None,
+        "use_entity_mask": (
+            not args.no_entity_mask if args.obs == "graph" else None
+        ),
+        "reward_scales_used": list(reward_scales),
+        "done_as_obstacles": bool(args.done_as_obstacles) if args.reward == "legacy" else False,
+        "mlp_hidden": args.mlp_hidden,
+        "learning_rate": args.learning_rate if args.learning_rate is not None else 3e-4,
+        "env_size": env_size,
+        "area_per_agent": env_size ** 2 / args.n,
     }
     post_episode_callback = make_episode_offload_callback(
         out_dir=out_dir,
@@ -432,6 +615,30 @@ def main() -> None:
         mode=args.offload_mode,
         every=args.offload_every,
     )
+
+    if args.no_step_csv:
+        if not hasattr(maddpg, "log_step_csv"):
+            raise SystemExit(
+                f"--no_step_csv is not supported by --algorithm {args.algorithm} "
+                "(only mappo gates per-step CSV logging)."
+            )
+        maddpg.log_step_csv = False
+
+    if hasattr(maddpg, "plot_every"):
+        maddpg.plot_every = args.plot_every
+        maddpg.max_shortfall_plots = args.max_shortfall_plots
+        maddpg.plot_shortfall = args.max_shortfall_plots > 0
+
+    monitor = None
+    if args.convergence:
+        monitor = conv.ConvergenceMonitor(
+            window=args.conv_window,
+            min_delta=args.conv_min_delta,
+            patience=args.conv_patience,
+            min_episodes=args.conv_min_episodes,
+            max_episodes=args.conv_max_episodes,
+            max_hours=args.conv_max_hours,
+        )
 
     try:
         loop_fn = maddpg.main_loop if args.use_offline_replay else maddpg.train_loop
@@ -446,6 +653,11 @@ def main() -> None:
             meta_extra=meta_extra,
             post_episode_callback=post_episode_callback,
         )
+        if monitor is not None:
+            loop_kwargs["convergence"] = monitor
+            # min_episodes_before_early_stop stays at its huge default so the
+            # loops' own score-based early stop never fires: the convergence
+            # monitor is the single stopping rule, identical across families.
         if args.use_orbit_restart:
             if not args.use_offline_replay:
                 raise SystemExit(
