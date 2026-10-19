@@ -1,0 +1,87 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the publications below
+  (the AI 2026 article is the preferred citation).
+title: "dif_driven_maddpg: multi-agent reinforcement learning for multi-robot landmark coverage"
+type: software
+authors:
+  - family-names: Kyzyrkanov
+    given-names: Abzal E.
+    email: abzzall@gmail.com
+  - family-names: Amirgaliyeva
+    given-names: Saltanat
+  - family-names: Yedilkhan
+    given-names: Didar
+  - family-names: Narynov
+    given-names: Sergazy
+repository-code: "https://github.com/qyzyrqanov/dif_driven_maddpg"
+license: CC-BY-NC-4.0
+keywords:
+  - multi-agent reinforcement learning
+  - MAPPO
+  - MADDPG
+  - multi-robot coverage
+  - differential-drive robots
+  - entity attention
+preferred-citation:
+  type: article
+  title: "Reliable Learning-Enabled Multi-Robot Coverage with Masked Entity-Attention MAPPO: A Controlled Multi-Seed Study"
+  authors:
+    - family-names: Amirgaliyeva
+      given-names: Saltanat
+    - family-names: Kyzyrkanov
+      given-names: Abzal E.
+    - family-names: Yedilkhan
+      given-names: Didar
+    - family-names: Turgunov
+      given-names: Bexultan
+    - family-names: Merembayev
+      given-names: Timur
+    - family-names: Narynov
+      given-names: Sergazy
+  journal: AI
+  year: 2026
+  volume: 7
+  issue: 10
+  start: 411
+  doi: 10.3390/ai7100411
+  url: "https://doi.org/10.3390/ai7100411"
+references:
+  - type: article
+    title: "Decentralized Shared Actor–Critic Learning for Collision-Aware Small-Team Multi-Robot Coverage"
+    authors:
+      - family-names: Kyzyrkanov
+        given-names: Abzal E.
+      - family-names: Yedilkhan
+        given-names: Didar
+      - family-names: Amirgaliyeva
+        given-names: Saltanat
+      - family-names: Narynov
+        given-names: Sergazy
+    journal: Robotics
+    year: 2026
+    volume: 15
+    issue: 7
+    start: 119
+    doi: 10.3390/robotics15070119
+    url: "https://doi.org/10.3390/robotics15070119"
+  - type: article
+    title: "Adaptive Replay Strategies Stabilize Multi-Agent Reinforcement Learning for Differential-Drive Robot Coordination"
+    authors:
+      - family-names: Kyzyrkanov
+        given-names: Abzal
+      - family-names: Otarbay
+        given-names: Zhenis
+      - family-names: Yedilkhan
+        given-names: Didar
+      - family-names: Amirgaliyev
+        given-names: Beibut
+    journal: "Journal of Robotics and Control (JRC)"
+    year: 2026
+    month: 1
+    volume: 6
+    issue: 6
+    start: 3068
+    end: 3087
+    doi: 10.18196/jrc.v6i6.28387
+    url: "https://doi.org/10.18196/jrc.v6i6.28387"
