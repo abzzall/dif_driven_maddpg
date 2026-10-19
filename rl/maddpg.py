@@ -11,6 +11,7 @@ from custom_envs.diff_driven.gym_env.centered_paralelenv.env import DiffDrivePar
 from models.simpleactor import SimpleActor
 from models.simplecritic import SharedCritic
 import tagged_replay_buffer, replay_buffer
+from rl.convergence import ConvergenceMonitor
 from abc import ABC, abstractmethod
 import torch.nn.functional as F
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
@@ -227,6 +228,7 @@ class MADDPGBase(ABC):
             start_training_after=start_training_after,
             rescale_env_rewards=None,
             min_episodes_before_early_stop: int = min_episodes_before_early_stop,
+            convergence: Optional[ConvergenceMonitor] = None,
             meta_extra: Optional[dict] = None,
             meta_path: str = "meta.json",
             post_episode_callback: Optional[Callable[[int, bool], None]] = None,
@@ -443,6 +445,8 @@ class MADDPGBase(ABC):
             best_score = state_dict["best_score"]
             self.replay_buffer.load("replay_buffer.pkl")
             episodes_without_improvement = state_dict["episodes_without_improvement"]
+            if convergence is not None and state_dict.get('convergence'):
+                convergence.load_state_dict(state_dict['convergence'])
             total_steps = state_dict['total_steps']
             self.actor_losses = state_dict['actor_losses']
             self.critic_losses = state_dict['critic_losses']
@@ -633,6 +637,24 @@ class MADDPGBase(ABC):
 
             print(f"Episode {i}, Score: {score:.2f}, Avg Score: {avg_score:.2f}, Tagged count: {tagged_count}")
             self.log_episode(episode_id=f'{i}')
+
+            # Convergence stopping. Uses the same success-rate plateau rule as
+            # the on-policy trainer so the two families are budgeted alike; it
+            # reuses the early-stop path below rather than duplicating the
+            # save/break logic.
+            if convergence is not None:
+                full_team = bool(self.env.dones.all())
+                if convergence.update(
+                    full_team,
+                    elapsed_hours=(time.time() - loop_start_wall) / 3600.0,
+                ):
+                    print(f"\nConvergence stop at episode {i + 1}: "
+                          f"reason={convergence.stop_reason} "
+                          f"rolling_sr={convergence.rolling_sr():.2f}%", flush=True)
+                    episodes_without_improvement = patience
+                if meta_extra is not None:
+                    meta_extra.update(convergence.summary())
+
             if not evaluate and avg_score > best_score and i > min_episodes_before_early_stop:
                 best_score = avg_score
                 # self.save_checkpoint(file_pref=f'best_{i}_{best_score}_{i}')
@@ -650,6 +672,7 @@ class MADDPGBase(ABC):
                     "score_history": self.score_history,
                     "best_score": best_score,
                     'episodes_without_improvement': episodes_without_improvement,
+                    'convergence': convergence.state_dict() if convergence else None,
                     'total_steps': total_steps,
                     'total_tagged': total_tagged,
                     'actor_losses': self.actor_losses,
@@ -724,6 +747,7 @@ class MADDPGBase(ABC):
                     "score_history": self.score_history,
                     "best_score": best_score,
                     'episodes_without_improvement': episodes_without_improvement,
+                    'convergence': convergence.state_dict() if convergence else None,
                     'total_steps': total_steps,
                     'total_tagged': total_tagged,
                     'actor_losses': self.actor_losses,
@@ -1312,7 +1336,9 @@ class MADDPGBase(ABC):
             ax.add_patch(circle)
 
         # Agent trajectories
-        colors = plt.cm.get_cmap('tab10', num_agents)
+        # plt.cm.get_cmap was removed in matplotlib 3.11; plt.get_cmap with an
+        # explicit lut size is the supported spelling.
+        colors = plt.get_cmap('tab10', num_agents)
         for agent_idx in range(num_agents):
             path = trajectory[:, agent_idx]
             ax.plot(path[:, 0], path[:, 1], color=colors(agent_idx), linewidth=1.5)
@@ -1346,6 +1372,7 @@ class MADDPGBase(ABC):
             start_training_after=start_training_after,
             rescale_env_rewards=None,
             min_episodes_before_early_stop:int=min_episodes_before_early_stop,
+            convergence: Optional[ConvergenceMonitor] = None,
             meta_extra: Optional[dict] = None,
             meta_path: str = "meta.json",
             post_episode_callback: Optional[Callable[[int, bool], None]] = None,
@@ -1393,6 +1420,8 @@ class MADDPGBase(ABC):
             best_score = state_dict["best_score"]
             self.replay_buffer.load("replay_buffer.pkl")
             episodes_without_improvement = state_dict["episodes_without_improvement"]
+            if convergence is not None and state_dict.get('convergence'):
+                convergence.load_state_dict(state_dict['convergence'])
             total_steps = state_dict['total_steps']
             self.actor_losses=state_dict['actor_losses']
             self.critic_losses=state_dict['critic_losses']
@@ -1491,6 +1520,20 @@ class MADDPGBase(ABC):
 
             print(f"Episode {i}, Score: {score:.2f}, Avg Score: {avg_score:.2f}")
 
+            # Convergence stopping -- same rule as the on-policy trainer, so an
+            # off-policy baseline is not budgeted by a different constant.
+            if convergence is not None:
+                if convergence.update(
+                    bool(self.env.dones.all()),
+                    elapsed_hours=total_train_seconds / 3600.0,
+                ):
+                    print(f"\nConvergence stop at episode {i + 1}: "
+                          f"reason={convergence.stop_reason} "
+                          f"rolling_sr={convergence.rolling_sr():.2f}%", flush=True)
+                    episodes_without_improvement = patience
+                if meta_extra is not None:
+                    meta_extra.update(convergence.summary())
+
             if not evaluate and avg_score > best_score and i>min_episodes_before_early_stop:
                 best_score = avg_score
                 self.save_checkpoint(file_pref=f'best_{best_score}_{i}')
@@ -1509,6 +1552,7 @@ class MADDPGBase(ABC):
                     "score_history": self.score_history,
                     "best_score": best_score,
                 'episodes_without_improvement': episodes_without_improvement,
+                    'convergence': convergence.state_dict() if convergence else None,
                     'total_steps':total_steps,
                     'actor_losses':self.actor_losses,
                     'critic_losses':self.critic_losses,
@@ -1561,6 +1605,7 @@ class MADDPGBase(ABC):
                     "score_history": self.score_history,
                     "best_score": best_score,
                     'episodes_without_improvement': episodes_without_improvement,
+                    'convergence': convergence.state_dict() if convergence else None,
                     'total_steps': total_steps,
                     'actor_losses': self.actor_losses,
                     'critic_losses': self.critic_losses,

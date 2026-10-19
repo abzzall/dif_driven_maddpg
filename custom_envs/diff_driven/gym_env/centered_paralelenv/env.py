@@ -103,6 +103,8 @@ class DiffDriveParallelEnv(ParallelEnv):
         new_env.timestep = self.timestep
 
         # Optionally copy additional attributes if present
+        if hasattr(self, "done_as_obstacles"):
+            new_env.done_as_obstacles = self.done_as_obstacles
         if hasattr(self, "dv_lin_max"):
             new_env.dv_lin_max = self.dv_lin_max
         if hasattr(self, "dv_ang_max"):
@@ -1240,6 +1242,7 @@ class DiffDriveParallelEnvAdj(DiffDriveParallelEnv):
 class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
     def __init__(
             self,
+            done_as_obstacles: bool = True,
             num_agents: int = num_agents,
             env_size: float = env_size,
             num_obstacles: int = num_obstacles,
@@ -1270,6 +1273,15 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
 
 
         )
+        # Treating finished agents as static obstacles (component 5) places a
+        # repulsion field on every landmark that has already been covered,
+        # because a done agent parks on its landmark. With num_obstacles=0 that
+        # term is *entirely* done-agent repulsion. It penalises exactly the
+        # region the remaining agents must enter to finish the task. It stays on
+        # by default because the published Robotics/JRC experiments were run with
+        # it; the entity-attention MAPPO study (graph_coverage_env.py,
+        # run/train_seeded.py) switches it off explicitly.
+        self.done_as_obstacles = bool(done_as_obstacles)
         if normalise:
             self.obs_dim = 3 * self.num_obstacles + 3 * self.num_landmarks + (self.num_agents - 1) * 5
             self.state_dim = 5 * self.num_agents + 3 * self.num_landmarks + 3 * self.num_obstacles
@@ -1486,7 +1498,13 @@ class DiffDriveParallelEnvDone(DiffDriveParallelEnv):
             # rewards[active_agents] -= penalty
             components[active_agents, 4] = penalty
         # ---------- Active-Agent vs Obstacles & Done-Agents Penalty ----------
-        done_agent_pos = self.agent_pos[self.dones]  # Done agents as static obstacles
+        # Done agents park on the landmark they covered, so treating them as
+        # obstacles puts a repulsion field on every solved goal. On by default
+        # (published behaviour); variants that skip __init__ fall back to it too.
+        if getattr(self, "done_as_obstacles", True):
+            done_agent_pos = self.agent_pos[self.dones]
+        else:
+            done_agent_pos = self.agent_pos[self.dones][:0]  # empty [0,2]
         num_done = int(done_agent_pos.shape[0])
 
         # Stack obstacle positions and radii with done agents (radius = agent_radius)
@@ -2018,7 +2036,13 @@ class DiffDriveParallelEnvAssignFirstDone(DiffDriveParallelEnvDone):
             # rewards[active_agents] -= penalty
             components[active_agents, 4] = penalty
         # ---------- Active-Agent vs Obstacles & Done-Agents Penalty ----------
-        done_agent_pos = self.agent_pos[self.dones]  # Done agents as static obstacles
+        # Done agents park on the landmark they covered, so treating them as
+        # obstacles puts a repulsion field on every solved goal. On by default
+        # (published behaviour); variants that skip __init__ fall back to it too.
+        if getattr(self, "done_as_obstacles", True):
+            done_agent_pos = self.agent_pos[self.dones]
+        else:
+            done_agent_pos = self.agent_pos[self.dones][:0]  # empty [0,2]
         num_done = int(done_agent_pos.shape[0])
 
         # Stack obstacle positions and radii with done agents (radius = agent_radius)
